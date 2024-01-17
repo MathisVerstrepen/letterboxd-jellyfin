@@ -49,4 +49,5 @@ def check_radarr_state(tmdb_id: str) -> FileExistsResponse:
         "monitored": res[0]["monitored"],
         "name": res[0]["title"],
         "tmdbId": res[0]["tmdbId"],
+        "productionYear": res[0]["year"],
     }

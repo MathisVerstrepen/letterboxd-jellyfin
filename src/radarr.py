@@ -16,6 +16,7 @@ headers = {
     "X-Api-Key": os.getenv("RADARR_API_KEY"),
 }
 
+
 class FileExistsResponse(TypedDict):
     """
     Data describing the existence of a movie in the Radarr library
@@ -51,3 +52,33 @@ def check_radarr_state(tmdb_id: str) -> FileExistsResponse:
         "tmdbId": res[0]["tmdbId"],
         "productionYear": res[0]["year"],
     }
+
+
+def add_to_radarr_download_queue(movies: list[str]) -> None:
+    """
+    Add a movie to the download queue
+    """
+
+    bodies = [
+        {
+            "tmdbId": movie["tmdbId"],
+            "title": movie["name"],
+            "year": movie["productionYear"],
+            "qualityProfileId": 11,
+            "monitored": True,
+            "rootFolderPath": "/data/complete/movies",
+            "addOptions": {"searchForMovie": False},
+            
+        }
+        for movie in movies
+    ]
+
+    url = RADARR_URL + "movie"
+    
+    for body in bodies:
+        response = requests.post(url, json=body, headers=headers, timeout=5)
+        if response.status_code != 201:
+            print(response.status_code)
+            print(response.content)
+        else:
+            print("Added " + body["title"] + " (" + str(body["year"]) + ") to the download queue")

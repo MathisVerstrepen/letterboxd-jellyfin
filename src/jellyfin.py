@@ -68,3 +68,24 @@ class Jellyfin():
             print(response.status_code)
             print(response.content)
             raise RadarrException("Unable to make request to " + url)
+        
+    def get_collection_movies(self, username: str) -> list[dict]:
+        """
+        Get all movies in a collection
+        """
+        
+        user_collection_id = self.params["collection_ids"][username]
+        if user_collection_id is None:
+            raise JellyfinException("Unable to find collection ID for " + username)
+        
+        url = JELLYFIN_URL + "Items"
+        params = {"ParentId": user_collection_id, "Recursive": "true", "IncludeItemTypes": "Movie"}
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        if response.status_code != 200:
+            print(response.status_code)
+            print(response.content)
+            raise RadarrException("Unable to make request to " + url)
+        
+        res = response.json()
+            
+        return set(map(lambda x: x["Id"], res["Items"]))

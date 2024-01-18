@@ -1,4 +1,4 @@
-![ReadMe Banner](https://github.com/MathisVerstrepen/github-visual-assets/blob/main/banner/Portfolio.png?raw=true)
+![ReadMe Banner](https://github.com/MathisVerstrepen/github-visual-assets/blob/main/banner/Letterboxd-Jellyfin.png?raw=true)
 
 # Letterboxd-Jellyfin Integration
 

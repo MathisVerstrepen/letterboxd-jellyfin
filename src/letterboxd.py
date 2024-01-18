@@ -18,7 +18,6 @@ def make_letterboxd_request(endpoint: str, retries: int = 3):
         requests.Response: The response from the API
     """
     url = URL + endpoint
-    print("Making request to " + url)
 
     for _ in range(retries):
         try:
@@ -60,6 +59,8 @@ def get_watchlist_tmdb_ids(username: str) -> set:
     Returns:
         set: The TMDB IDs of the films in the watchlist
     """
+    page_idx = 1
+    print("Getting watchlist page " + str(page_idx))
 
     # Get the watchlist page
     watchlist_page = make_letterboxd_request(username + "/watchlist/")
@@ -87,7 +88,9 @@ def get_watchlist_tmdb_ids(username: str) -> set:
         # Get the next page
         next_page_link = watchlist_soup.find("a", {"class": "next"})
         if next_page_link is not None:
-            print("Found next page link, continuing")
+            page_idx += 1
+            print("Getting watchlist page " + str(page_idx))
+
             watchlist_page = make_letterboxd_request(next_page_link["href"])
             watchlist_soup = BeautifulSoup(watchlist_page.content, "html.parser")
             film_frames = watchlist_soup.find_all("div", {"class": "poster"})

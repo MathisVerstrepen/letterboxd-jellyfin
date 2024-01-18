@@ -68,17 +68,22 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
             "monitored": True,
             "rootFolderPath": "/data/complete/movies",
             "addOptions": {"searchForMovie": False},
-            
         }
         for movie in movies
     ]
 
     url = RADARR_URL + "movie"
-    
+
     for body in bodies:
         response = requests.post(url, json=body, headers=headers, timeout=5)
         if response.status_code != 201:
             print(response.status_code)
             print(response.content)
         else:
-            print("Added " + body["title"] + " (" + str(body["year"]) + ") to the download queue")
+            print(
+                "Added "
+                + body["title"]
+                + " ("
+                + str(body["year"])
+                + ") to the download queue"
+            )

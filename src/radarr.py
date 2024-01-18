@@ -1,6 +1,7 @@
 # pylint: disable=missing-module-docstring
 from typing import TypedDict
 import os
+import json
 import requests
 from dotenv import load_dotenv
 
@@ -17,7 +18,7 @@ headers = {
 }
 
 
-class FileExistsResponse(TypedDict):
+class RadarrState(TypedDict):
     """
     Data describing the existence of a movie in the Radarr library
     """
@@ -26,9 +27,11 @@ class FileExistsResponse(TypedDict):
     monitored: bool
     name: str
     tmdbId: int
+    productionYear: int
+    is_animation: bool
 
 
-def check_radarr_state(tmdb_id: str) -> FileExistsResponse:
+def check_radarr_state(tmdb_id: str) -> RadarrState:
     """
     Check if a file exists at a given URL
     """
@@ -51,6 +54,7 @@ def check_radarr_state(tmdb_id: str) -> FileExistsResponse:
         "name": res[0]["title"],
         "tmdbId": res[0]["tmdbId"],
         "productionYear": res[0]["year"],
+        "is_animation": "Animation" in res[0]["genres"],
     }
 
 
@@ -59,6 +63,9 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
     Add a movie to the download queue
     """
 
+    with open("params.json", "r", encoding="utf-8") as file:
+        params = json.load(file)
+
     bodies = [
         {
             "tmdbId": movie["tmdbId"],
@@ -66,7 +73,9 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
             "year": movie["productionYear"],
             "qualityProfileId": 11,
             "monitored": True,
-            "rootFolderPath": "/data/complete/movies",
+            "rootFolderPath": params["radarr_root_paths"][
+                "movies" if not movie["is_animation"] else "anime_movies"
+            ],
             "addOptions": {"searchForMovie": False},
         }
         for movie in movies
@@ -79,11 +88,3 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
         if response.status_code != 201:
             print(response.status_code)
             print(response.content)
-        else:
-            print(
-                "Added "
-                + body["title"]
-                + " ("
-                + str(body["year"])
-                + ") to the download queue"
-            )

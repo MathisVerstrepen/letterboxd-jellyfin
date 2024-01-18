@@ -2,5 +2,11 @@
     "collection_ids" : {
         "Mathis_V" : "e88a35853226fa5bc6af39a1c29bfc09",
         "Nimportnawak_" : "d3d247b39b044e916fdc7e46d922d514"
+    },
+    "radarr_root_paths" : {
+        "movies" : "/data/complete/movies",
+        "series" : "/data/complete/tv",
+        "anime_movies" : "/data/complete/anime_movies",
+        "anime_series" : "/data/complete/anime_tv"
     }
 }

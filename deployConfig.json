@@ -14,7 +14,9 @@
             "imageTag": "latest",
             "dockerfileLocation": "Dockerfile",
             "buildArgs": [],
-            "composeFile": "docker-compose.yml"
+            "composeFile": "docker-compose.yml",
+            "envFile": "letterboxd-jellyfin.env",
+            "envDeploy": "file"
         },
 
         "deploy": {

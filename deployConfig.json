@@ -16,7 +16,7 @@
             "buildArgs": [],
             "composeFile": "docker-compose.yml",
             "envFile": "letterboxd-jellyfin.env",
-            "envDeploy": "file"
+            "envDeployType": "file"
         },
 
         "deploy": {

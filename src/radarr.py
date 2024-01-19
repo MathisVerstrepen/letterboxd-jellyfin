@@ -71,7 +71,7 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
             "rootFolderPath": params["radarr_root_paths"][
                 "movies" if not movie["is_animation"] else "anime_movies"
             ],
-            "addOptions": {"searchForMovie": False},
+            "addOptions": {"searchForMovie": True},
         }
         for movie in movies
     ]

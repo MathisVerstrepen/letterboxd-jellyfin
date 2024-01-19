@@ -1,0 +1,26 @@
+{
+    "_meta": {
+        "deployService": "ApolloLaunch",
+        "deployServiceVersion": "1.0.0"
+    },
+    "config": {
+        "repository": {
+            "owner": "Mathis Verstrepen",
+            "name": "letterboxd-jellyfin"
+        },
+
+        "docker": {
+            "imageName": "letterboxd-jellyfin-cron",
+            "imageTag": "latest",
+            "dockerfileLocation": "Dockerfile",
+            "buildArgs": [],
+            "composeFile": "docker-compose.yml"
+        },
+
+        "deploy": {
+            "strategy": "all-at-once"
+        },
+
+        "environment": "prod"
+    }
+}

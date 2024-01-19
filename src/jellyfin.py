@@ -2,22 +2,17 @@
 import os
 import json
 import requests
-from dotenv import load_dotenv
 
 from src.exceptions import RadarrException, JellyfinException
 
 JELLYFIN_URL = "https://stream.diikstra.fr/"
 
-load_dotenv()
-
-headers = {
-    "Authorization": f'MediaBrowser Token="{os.getenv("JELLYFIN_API_KEY")}"',
-}
-
-
 class Jellyfin:
     def __init__(self) -> None:
         # Get all movies in the library
+        self.headers = {
+            "Authorization": f'MediaBrowser Token="{os.getenv("JELLYFIN_API_KEY")}"',
+        }
         self.movies = self.get_movies()
 
         with open("params.json", "r", encoding="utf-8") as file:
@@ -30,7 +25,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Items"
         params = {"Recursive": "true", "IncludeItemTypes": "Movie"}
-        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=5)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -68,7 +63,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Collections/" + user_collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
-        response = requests.post(url, headers=headers, params=params, timeout=5)
+        response = requests.post(url, headers=self.headers, params=params, timeout=5)
         if response.status_code != 204:
             print(response.status_code)
             print(response.content)
@@ -89,7 +84,7 @@ class Jellyfin:
             "Recursive": "true",
             "IncludeItemTypes": "Movie",
         }
-        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=5)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -111,7 +106,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Collections/" + user_collection_id + "/Items"
         params = {"ids": ",".join(movie_tmdb)}
-        response = requests.delete(url, headers=headers, params=params, timeout=5)
+        response = requests.delete(url, headers=self.headers, params=params, timeout=5)
         if response.status_code != 204:
             print(response.status_code)
             print(response.content)

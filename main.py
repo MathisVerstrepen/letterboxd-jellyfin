@@ -1,4 +1,8 @@
 # pylint: disable=missing-module-docstring
+import os
+import pathlib
+from dotenv import load_dotenv
+
 from src.letterboxd import get_watchlist_tmdb_ids
 from src.radarr import check_radarr_state, add_to_radarr_download_queue, RadarrState
 from src.jellyfin import Jellyfin
@@ -8,6 +12,15 @@ from src.exceptions import JellyfinException
 JellyfinId = str
 
 USERNAMES = ["Mathis_V", "Nimportnawak_"]
+
+if pathlib.Path("/.dockerenv").exists():
+    print("Running in Docker")
+    os.chdir("/app")
+    load_dotenv("/app/.env")
+else:
+    print("Running locally")
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    load_dotenv(".env")
 
 if __name__ == "__main__":
     jellyfin = Jellyfin()

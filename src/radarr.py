@@ -3,20 +3,12 @@ from typing import TypedDict
 import os
 import json
 import requests
-from dotenv import load_dotenv
 
 from src.exceptions import RadarrException
 
 # get env variables from .env file
 
-load_dotenv()
-
 RADARR_URL = "http://192.168.2.64:7878/api/v3/"
-
-headers = {
-    "X-Api-Key": os.getenv("RADARR_API_KEY"),
-}
-
 
 class RadarrState(TypedDict):
     """
@@ -38,6 +30,9 @@ def check_radarr_state(tmdb_id: str) -> RadarrState:
 
     url = RADARR_URL + "movie/lookup"
     params = {"term": "tmdb:" + tmdb_id}
+    headers = {
+        "X-Api-Key": os.getenv("RADARR_API_KEY"),
+    }
     response = requests.get(url, params=params, headers=headers, timeout=5)
     if response.status_code != 200:
         print(response.status_code)
@@ -82,6 +77,9 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
     ]
 
     url = RADARR_URL + "movie"
+    headers = {
+        "X-Api-Key": os.getenv("RADARR_API_KEY"),
+    }
 
     for body in bodies:
         response = requests.post(url, json=body, headers=headers, timeout=5)

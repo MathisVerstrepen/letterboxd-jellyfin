@@ -1,0 +1,11 @@
+version: "3.1"
+name: letterboxd_jellyfin
+
+services:
+  cron:
+    container_name: cron
+    image: letterboxd-jellyfin-cron
+    build: 
+      context: .
+      dockerfile: ./Dockerfile
+    restart: unless-stopped

@@ -1,6 +1,3 @@
-# sudo docker build -t letterboxd-jellyfin-cron .
-# sudo docker run -it --rm --name letterboxd-jellyfin-cron --env-file .env letterboxd-jellyfin-cron
-
 FROM python:3.11
 
 RUN apt-get update && apt-get -y install cron vim
@@ -16,6 +13,7 @@ RUN pip3 install -r requirements.txt --no-cache-dir
 COPY ./params.json /app/params.json
 COPY main.py /app/main.py
 COPY /src/*.py /app/src/
+COPY ./.env /app/.env
 
 # run crond as main process of container
 CMD ["cron", "-f"]

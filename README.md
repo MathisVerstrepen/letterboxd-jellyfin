@@ -2,21 +2,19 @@
 
 # Letterboxd-Jellyfin Integration
 
-Ce dépôt GitHub contient un projet open-source visant à intégrer la watchlist de Letterboxd avec Jellyfin en récupérant les TMDB ID.
+This is a simple script that allows you to import your Letterboxd watchlist into Jellyfin. It will create a new Jellyfin collection for each Letterboxd user and add all movies from their watchlist to it. 
 
 ![Splitter-1](https://raw.githubusercontent.com/MathisVerstrepen/github-visual-assets/main/splitter/splitter-1.png)
 
-## Fonctionnalités
+## Features
 
-- Récupération des films de la watchlist Letterboxd
-- Recherche des TMDB ID correspondants pour chaque film
-- Intégration des films dans Jellyfin en utilisant les TMDB ID
+- Scrapes Letterboxd watchlist 
+- Link Letterboxd movies to Radarr
+- Create Jellyfin collections for each Letterboxd user
+- Add movies to Jellyfin collections
 
 ![Splitter-1](https://raw.githubusercontent.com/MathisVerstrepen/github-visual-assets/main/splitter/splitter-1.png)
 
-## Comment ça fonctionne
+## How it works
 
-1. L'utilisateur autorise l'accès à sa watchlist Letterboxd
-2. Le script récupère les films de la watchlist
-3. Pour chaque film, le script recherche le TMDB ID correspondant
-4. Les films sont ajoutés à Jellyfin en utilisant les TMDB ID
+![UML Diagram](/letterboxd-jellyfin.drawio.png)

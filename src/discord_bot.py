@@ -69,7 +69,7 @@ async def update_discord_message(
             return None
 
     async def update_message():
-        channel_id = 1198277972914864138  # Remplacez par l'ID de votre channel
+        channel_id = 1198277972914864138
         channel = bot.get_channel(channel_id)
 
         if channel is None:

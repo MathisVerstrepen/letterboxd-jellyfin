@@ -1,0 +1,29 @@
+🎬 **Statistiques du Serveur Jellyfin** 📊
+
+🎥 **Films**
+- **Nombre Total de Films** : `[nb_movies]`
+- **Nombre Films en 4K** : `[nb_movies_4k]`
+- **Poids Total des Films** : `[size_movies]`
+
+📺 **Séries**
+- **Nombre Total de Séries** : `[nb_tv]`
+- **Nombre Total d'épisodes** : `[nb_tv_episode]`
+- **Nombre Séries en 4K** : `[nb_tv_4k]`
+- **Poids Total des Séries** : `[size_tv]`
+
+🌟 **Films d'Animation**
+- **Nombre Total de Films d'Animation** : `[nb_movies_anim]`
+- **Nombre Films d'Animation en 4K** : `[nb_movies_anim_4k]`
+- **Poids Total des Films d'Animation** : `[size_movies_anim]`
+
+👾 **Séries d'Animation**
+- **Nombre Total de Séries d'Animation** : `[nb_series_anim]`
+- **Nombre Total d'épisodes d'Animation** : `[nb_series_anim_episode]`
+- **Nombre Séries d'Animation en 4K** : `[nb_series_anim_4k]`
+- **Poids Total des Séries d'Animation** : `[size_series_anim]`
+
+💾 **Espace Disque**
+- **Poids Total de Tous les Médias** : `[size_all]`
+- **Espace Disque Restant sur la Machine** : `[size_remaining]`
+
+Derniere Synchronisation : `[date_sync]`

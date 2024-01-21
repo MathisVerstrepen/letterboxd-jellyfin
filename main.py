@@ -1,14 +1,14 @@
 # pylint: disable=missing-module-docstring
 import os
 import pathlib
-from dotenv import load_dotenv
-from pprint import pprint
 import asyncio
+from dotenv import load_dotenv
+
 
 from src.letterboxd import get_watchlist_tmdb_ids
-from src.radarr import check_radarr_state, add_to_radarr_download_queue, RadarrState
+from src.radarr import check_radarr_state, add_to_radarr_download_queue, RadarrState, get_disk_space
 from src.jellyfin import Jellyfin
-# from src.discord_bot import update_discord_message
+from src.discord_bot import update_discord_message
 
 from src.exceptions import JellyfinException
 
@@ -27,7 +27,6 @@ else:
 
 if __name__ == "__main__":
     jellyfin = Jellyfin()
-    # movies_stats = jellyfin.get_movies_stats()
     
     for USERNAME in USERNAMES:
         print("Processing user " + USERNAME)
@@ -84,6 +83,12 @@ if __name__ == "__main__":
 
         print("Adding " + str(len(items_to_download)) + " movies to download queue")
         add_to_radarr_download_queue(items_to_download)
+    
+    movies_stats = jellyfin.get_movies_stats()
+    anime_movies_stats = jellyfin.get_animes_movies_stats()
+    tv_show_stats = jellyfin.get_tv_show_stats()
+    anime_show_stats = jellyfin.get_animes_show_stats()
+    disk_stats = get_disk_space("/data")
+    print(disk_stats)
 
-
-    # asyncio.run(update_discord_message(movies_stats))
+    asyncio.run(update_discord_message(movies_stats, anime_movies_stats, tv_show_stats, anime_show_stats, disk_stats))

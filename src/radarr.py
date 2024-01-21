@@ -86,3 +86,35 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
         if response.status_code != 201:
             print(response.status_code)
             print(response.content)
+            
+def get_disk_space(folder: str) -> dict:
+    """ Get the disk space of the server where Radarr is running
+    
+    Params:
+        folder (str): The folder to check the disk space of
+
+    Raises:
+        RadarrException: Unable to make request to /api/v3/diskspace
+
+    Returns:
+        dict: The response from the API in JSON format
+    """
+    url = RADARR_URL + "diskspace"
+    headers = {
+        "X-Api-Key": os.getenv("RADARR_API_KEY"),
+    }
+    response = requests.get(url, headers=headers, timeout=5)
+    if response.status_code != 200:
+        print(response.status_code)
+        print(response.content)
+        raise RadarrException("Unable to make request to " + url)
+    
+    res = response.json()
+    
+    folder_stats = {}
+    for disk in res:
+        if disk["path"] == folder:
+            folder_stats = disk
+            break
+        
+    return folder_stats

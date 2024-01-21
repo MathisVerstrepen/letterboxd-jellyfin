@@ -14,6 +14,7 @@ class Jellyfin:
             "Authorization": f'MediaBrowser Token="{os.getenv("JELLYFIN_API_KEY")}"',
         }
         self.movies = self.get_movies()
+        self.series = self.get_series()
 
         with open("params.json", "r", encoding="utf-8") as file:
             self.params = json.load(file)
@@ -24,7 +25,7 @@ class Jellyfin:
         """
 
         url = JELLYFIN_URL + "Items"
-        params = {"Recursive": "true", "IncludeItemTypes": "Movie"}
+        params = {"Recursive": "true", "IncludeItemTypes": "Movie", "fields" : "MediaSources"}
         response = requests.get(url, params=params, headers=self.headers, timeout=5)
         if response.status_code != 200:
             print(response.status_code)
@@ -34,6 +35,38 @@ class Jellyfin:
         res = response.json()
 
         return res
+    
+    def get_series(self) -> list[dict]:
+        """
+        Get all series in the Jellyfin library
+        """
+
+        url = JELLYFIN_URL + "Items"
+        params = {"Recursive": "true", "IncludeItemTypes": "Series", "fields" : "MediaSources"}
+        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        if response.status_code != 200:
+            print(response.status_code)
+            print(response.content)
+            raise RadarrException("Unable to make request to " + url)
+
+        res = response.json()
+
+        return res
+    
+    def get_serie_details(self, serie_id: str) -> dict:
+        """
+        Get serie details from its ID
+        """
+
+        url = JELLYFIN_URL + "Shows/" + serie_id + "/Episodes"
+        params = {"Recursive": "true", "IncludeItemTypes": "Series", "fields" : "MediaSources"}
+        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        if response.status_code != 200:
+            print(response.status_code)
+            print(response.content)
+            raise RadarrException("Unable to make request to " + url)
+
+        return response.json()
 
     def get_movie_id(self, movie_name: str, movie_year: str) -> str:
         """
@@ -111,3 +144,113 @@ class Jellyfin:
             print(response.status_code)
             print(response.content)
             raise RadarrException("Unable to make request to " + url)
+        
+    def get_movies_stats(self) -> dict:
+        """
+        Get the stats of movies in the Jellyfin library
+        """
+        n_movies = 0
+        n_movies_4k = 0
+        movies_size = 0
+        
+        for movie in self.movies["Items"]:
+            if "/movies/" in movie["MediaSources"][0]["Path"]:
+                n_movies += 1
+                for media_stream in movie["MediaSources"][0]["MediaStreams"]:
+                    if "4K" in media_stream.get("DisplayTitle", ""):
+                        n_movies_4k += 1
+                movies_size += movie["MediaSources"][0]["Size"]
+                
+        return {
+            "nb_movies": n_movies,
+            "nb_movies_4k": n_movies_4k,
+            "size_movies": movies_size
+        }
+        
+    def get_animes_movies_stats(self):
+        """
+        Get the stats of anime movies in the Jellyfin library
+        """
+        n_movies = 0
+        n_movies_4k = 0
+        movies_size = 0
+        
+        for movie in self.movies["Items"]:
+            if "/animemovies/" in movie["MediaSources"][0]["Path"]:
+                n_movies += 1
+                for media_stream in movie["MediaSources"][0]["MediaStreams"]:
+                    if "4K" in media_stream.get("DisplayTitle", ""):
+                        n_movies_4k += 1
+                movies_size += movie["MediaSources"][0]["Size"]
+                
+        return {
+            "nb_movies_anim": n_movies,
+            "nb_movies_anim_4k": n_movies_4k,
+            "size_movies_anim": movies_size
+        }
+        
+    def get_tv_show_stats(self):
+        """
+        Get the stats of the TV shows in the Jellyfin library
+        """
+        n_series = 0
+        n_tv_episode = 0
+        n_series_4k = 0
+        series_size = 0
+        
+        for serie in self.series["Items"]:
+            serie_id = serie['Id']
+            episodes = self.get_serie_details(serie_id)
+            
+            n_series += 1
+            is_4k = False
+            for episode in episodes["Items"]:
+                if "/tvshows/" in episode["MediaSources"][0]["Path"]:
+                    n_tv_episode += 1
+                    for media_stream in episode["MediaSources"][0]["MediaStreams"]:
+                        if "4K" in media_stream.get("DisplayTitle", ""):
+                            is_4k = True
+                    series_size += episode["MediaSources"][0]["Size"]
+                    
+            if is_4k:
+                n_series_4k += 1
+                
+        return {
+            "nb_tv": n_series,
+            "nb_tv_episode": n_tv_episode,
+            "nb_tv_4k": n_series_4k,
+            "size_tv": series_size
+        }
+        
+    def get_animes_show_stats(self):
+        """
+        Get the stats of anime shows in the Jellyfin library
+        """
+        n_series = 0
+        n_tv_episode = 0
+        n_series_4k = 0
+        series_size = 0
+        
+        for serie in self.series["Items"]:
+            serie_id = serie['Id']
+            episodes = self.get_serie_details(serie_id)
+            
+            n_series += 1
+            is_4k = False
+            for episode in episodes["Items"]:
+                if "/animeshows/" in episode["MediaSources"][0]["Path"]:
+                    n_tv_episode += 1
+                    for media_stream in episode["MediaSources"][0]["MediaStreams"]:
+                        if "4K" in media_stream.get("DisplayTitle", ""):
+                            is_4k = True
+                    series_size += episode["MediaSources"][0]["Size"]
+                    
+            if is_4k:
+                n_series_4k += 1
+                
+        return {
+            "nb_series_anim": n_series,
+            "nb_series_anim_episode": n_tv_episode,
+            "nb_series_anim_4k": n_series_4k,
+            "size_series_anim": series_size
+        }

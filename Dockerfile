@@ -11,6 +11,7 @@ COPY ./requirements.txt /app/requirements.txt
 RUN pip3 install -r requirements.txt --no-cache-dir 
 
 COPY ./params.json /app/params.json
+COPY ./discord_template.txt /app/discord_template.txt
 COPY main.py /app/main.py
 COPY /src/*.py /app/src/
 COPY ./.env /app/.env

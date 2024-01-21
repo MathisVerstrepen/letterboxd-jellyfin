@@ -53,8 +53,8 @@ async def update_discord_message(
 
     async def get_latest_message_id(channel):
         try:
-            messages = await channel.history(limit=1).flatten()
-            return messages[0].id if messages else None
+            async for message in channel.history(limit=1):
+                return message.id
         except Exception as e:
             print(f"Erreur lors de la récupération du dernier message : {e}")
             return None

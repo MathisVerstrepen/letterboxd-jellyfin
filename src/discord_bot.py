@@ -1,6 +1,7 @@
 # pylint: disable=missing-module-docstring
 import os
 import datetime
+import pytz
 import discord
 from discord.ext import commands
 
@@ -19,7 +20,8 @@ async def update_discord_message(
     
     with open("discord_template.txt", "r", encoding="utf-8") as file:
         stats = file.read()
-        stats = stats.replace("[date_sync]", datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+        # Date timezone Paris
+        stats = stats.replace("[date_sync]", datetime.datetime.now(pytz.timezone('Europe/Paris')).strftime("%d/%m/%Y %H:%M:%S"))
         
         stats = stats.replace("[nb_movies]", str(movies_stats["nb_movies"]))
         stats = stats.replace("[nb_movies_4k]", str(movies_stats["nb_movies_4k"]))

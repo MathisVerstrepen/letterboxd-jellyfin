@@ -89,6 +89,5 @@ if __name__ == "__main__":
     tv_show_stats = jellyfin.get_tv_show_stats()
     anime_show_stats = jellyfin.get_animes_show_stats()
     disk_stats = get_disk_space("/data")
-    print(disk_stats)
 
     asyncio.run(update_discord_message(movies_stats, anime_movies_stats, tv_show_stats, anime_show_stats, disk_stats))

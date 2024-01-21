@@ -43,7 +43,8 @@ async def update_discord_message(
         stats = stats.replace("[size_remaining]", str(round(disk_stats["freeSpace"] / 1024 / 1024 / 1024, 2)) + " Go")
     
     token = os.getenv("DISCORD_TOKEN")
-    bot = commands.Bot(command_prefix="!")
+    intents = discord.Intents.all()
+    bot = commands.Bot(command_prefix="!", intents=intents)
 
     @bot.event
     async def on_ready():

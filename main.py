@@ -2,16 +2,19 @@
 import os
 import pathlib
 from dotenv import load_dotenv
+from pprint import pprint
+import asyncio
 
 from src.letterboxd import get_watchlist_tmdb_ids
 from src.radarr import check_radarr_state, add_to_radarr_download_queue, RadarrState
 from src.jellyfin import Jellyfin
+# from src.discord_bot import update_discord_message
 
 from src.exceptions import JellyfinException
 
 JellyfinId = str
 
-USERNAMES = ["Mathis_V", "Nimportnawak_"]
+USERNAMES = ["Mathis_V", "Nimportnawak_", "arkc0s"]
 
 if pathlib.Path("/.dockerenv").exists():
     print("Running in Docker")
@@ -24,6 +27,7 @@ else:
 
 if __name__ == "__main__":
     jellyfin = Jellyfin()
+    # movies_stats = jellyfin.get_movies_stats()
     
     for USERNAME in USERNAMES:
         print("Processing user " + USERNAME)
@@ -80,3 +84,6 @@ if __name__ == "__main__":
 
         print("Adding " + str(len(items_to_download)) + " movies to download queue")
         add_to_radarr_download_queue(items_to_download)
+
+
+    # asyncio.run(update_discord_message(movies_stats))

@@ -1,7 +1,8 @@
 {
     "collection_ids" : {
         "Mathis_V" : "e88a35853226fa5bc6af39a1c29bfc09",
-        "Nimportnawak_" : "d3d247b39b044e916fdc7e46d922d514"
+        "Nimportnawak_" : "d3d247b39b044e916fdc7e46d922d514",
+        "arkc0s": "2db0f54db32a66ec41af0d3d11616e0e"
     },
     "radarr_root_paths" : {
         "movies" : "/data/complete/movies",

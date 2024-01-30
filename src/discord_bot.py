@@ -25,6 +25,7 @@ async def update_discord_message(
         
         stats = stats.replace("[nb_movies]", str(movies_stats["nb_movies"]))
         stats = stats.replace("[nb_movies_4k]", str(movies_stats["nb_movies_4k"]))
+        stats = stats.replace("[nb_movies_remux]", str(movies_stats["nb_movies_remux"]))
         stats = stats.replace("[size_movies]", str(round(movies_stats["size_movies"] / 1024 / 1024 / 1024, 2)) + " Go")
         
         stats = stats.replace("[nb_movies_anim]", str(anime_movies_stats["nb_movies_anim"]))

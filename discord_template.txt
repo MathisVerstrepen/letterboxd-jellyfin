@@ -3,6 +3,7 @@
 🎥 **Films**
 - **Nombre Total de Films** : `[nb_movies]`
 - **Nombre Films en 4K** : `[nb_movies_4k]`
+- **Nombre Films REMUX** : `[nb_movies_remux]`
 - **Poids Total des Films** : `[size_movies]`
 
 📺 **Séries**

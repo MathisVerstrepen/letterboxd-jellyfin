@@ -151,6 +151,7 @@ class Jellyfin:
         """
         n_movies = 0
         n_movies_4k = 0
+        n_movies_remux = 0
         movies_size = 0
         
         for movie in self.movies["Items"]:
@@ -160,11 +161,15 @@ class Jellyfin:
                     if "4K" in media_stream.get("DisplayTitle", ""):
                         n_movies_4k += 1
                 movies_size += movie["MediaSources"][0]["Size"]
-                
+            elif "/remux/" in movie["MediaSources"][0]["Path"]:
+                n_movies_remux += 1
+                n_movies += 1
+                n_movies_4k += 1
         return {
             "nb_movies": n_movies,
             "nb_movies_4k": n_movies_4k,
-            "size_movies": movies_size
+            "size_movies": movies_size,
+            "nb_movies_remux": n_movies_remux
         }
         
     def get_animes_movies_stats(self):

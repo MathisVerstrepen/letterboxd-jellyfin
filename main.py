@@ -79,7 +79,7 @@ if __name__ == "__main__":
         jellyfin.remove_from_collection(items_to_remove, USERNAME)
 
         print("Adding " + str(len(items_to_add)) + " new movies to collection")
-        jellyfin.add_to_collection(items_to_add, USERNAME)
+        jellyfin.add_to_user_collection(items_to_add, USERNAME)
 
         print("Adding " + str(len(items_to_download)) + " movies to download queue")
         add_to_radarr_download_queue(items_to_download)

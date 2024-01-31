@@ -2,12 +2,27 @@
     "collection_ids" : {
         "Mathis_V" : "e88a35853226fa5bc6af39a1c29bfc09",
         "Nimportnawak_" : "d3d247b39b044e916fdc7e46d922d514",
-        "arkc0s": "2db0f54db32a66ec41af0d3d11616e0e"
+        "arkc0s": "2db0f54db32a66ec41af0d3d11616e0e",
+        "directors" : "af6bd65fc924d6b0e4438df060467e8f"
     },
     "radarr_root_paths" : {
         "movies" : "/data/complete/movies",
         "series" : "/data/complete/tv",
         "anime_movies" : "/data/complete/anime_movies",
         "anime_series" : "/data/complete/anime_tv"
-    }
+    },
+    "directors" : [
+        "Christopher Nolan",
+        "David Fincher",
+        "Denis Villeneuve",
+        "Stanley Kubrick",
+        "Steven Spielberg",
+        "Martin Scorsese",
+        "Peter Jackson",
+        "Wes Anderson",
+        "Park Chan-wook",
+        "Bong Joon-ho",
+        "Ari Aster",
+        "Jordan Peele"
+    ]
 }

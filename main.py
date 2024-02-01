@@ -83,6 +83,16 @@ if __name__ == "__main__":
 
         print("Adding " + str(len(items_to_download)) + " movies to download queue")
         add_to_radarr_download_queue(items_to_download)
+        
+    directors = jellyfin.get_directors_stats()
+
+    for director in directors:
+        if director[0] in jellyfin.params["directors"]:
+            collection = jellyfin.get_collection_by_name(director[0])
+
+            if collection:
+                collection_id = collection
+                jellyfin.add_to_collection(director[1]["movies"], collection_id)
     
     movies_stats = jellyfin.get_movies_stats()
     anime_movies_stats = jellyfin.get_animes_movies_stats()
@@ -91,3 +101,4 @@ if __name__ == "__main__":
     disk_stats = get_disk_space("/data")
 
     asyncio.run(update_discord_message(movies_stats, anime_movies_stats, tv_show_stats, anime_show_stats, disk_stats))
+    

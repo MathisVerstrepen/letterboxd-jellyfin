@@ -43,9 +43,13 @@ class Jellyfin:
             raise RadarrException("Unable to make request to " + url)
 
         res = response.json()
-        
-        for movie in res.get('Items', []):
-            movie['Directors'] = [person for person in movie.get('People', []) if person.get('Type') == 'Director']
+
+        for movie in res.get("Items", []):
+            movie["Directors"] = [
+                person
+                for person in movie.get("People", [])
+                if person.get("Type") == "Director"
+            ]
 
         return res
 
@@ -122,12 +126,12 @@ class Jellyfin:
             print(response.status_code)
             print(response.content)
             raise RadarrException("Unable to make request to " + url)
-        
+
     def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
         """
         Add a movie to a collection
         """
-        print("Adding " + str(len(movie_ids)) + " movies to collection")
+
         url = JELLYFIN_URL + "Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
         response = requests.post(url, headers=self.headers, params=params, timeout=5)
@@ -189,43 +193,45 @@ class Jellyfin:
             "SearchTerm": collection_name,
             "IncludeItemTypes": "BoxSet",
             "Recursive": "true",
-            "Limit": 1
+            "Limit": 1,
         }
-        
+
         response = requests.get(url, headers=self.headers, params=params, timeout=5)
-        
+
         if response.status_code == 200:
             res = response.json()
-            items = res.get('Items', [])
-            
+            items = res.get("Items", [])
+
             for item in items:
-                if item.get('Name').lower() == collection_name.lower():
-                    return item.get('Id', '')
-        
+                if item.get("Name").lower() == collection_name.lower():
+                    return item.get("Id", "")
+
         else:
             print(f"Erreur: {response.status_code}")
             print(response.content)
-        
-        return ''
-    
-    def create_collection(self, collection_name: str, parent_collection_id: str = '') -> dict:
+
+        return ""
+
+    def create_collection(
+        self, collection_name: str, parent_collection_id: str = ""
+    ) -> dict:
         """
         Create a collection
         """
-        
+
         url = JELLYFIN_URL + "Collections"
         params = {
             "name": collection_name,
             "parentId": parent_collection_id,
         }
-        
+
         # Exécuter la requête
         response = requests.post(url, headers=self.headers, params=params, timeout=5)
-        
+
         # Vérifier le succès de la requête
         if response.status_code == 200:
             return response.json()
-        
+
         # Gérer les erreurs ou l'absence de résultats
         else:
             print(f"Erreur: {response.status_code}")
@@ -362,23 +368,24 @@ class Jellyfin:
                 directors[director["Name"]]["nb_movies"] += 1
                 directors[director["Name"]]["movies"].append(movie["Id"])
 
-        return sorted(
-            directors.items(), key=lambda x: x[1]["nb_movies"], reverse=True
-        )
+        return sorted(directors.items(), key=lambda x: x[1]["nb_movies"], reverse=True)
+
 
 if __name__ == "__main__":
     jellyfin = Jellyfin()
     directors = jellyfin.get_directors_stats()
-    
+
     for director in directors:
-        if director[0] in jellyfin.params['directors']:
+        if director[0] in jellyfin.params["directors"]:
             collection = jellyfin.get_collection_by_name(director[0])
-            
+
             if collection:
                 collection_id = collection
             else:
-                collection = jellyfin.create_collection(director[0], jellyfin.params['collection_ids']['directors'])
+                collection = jellyfin.create_collection(
+                    director[0], jellyfin.params["collection_ids"]["directors"]
+                )
                 print(f"Collection {director[0]} created")
-                collection_id = collection.get('Id')
-                
-            jellyfin.add_to_collection(director[1]['movies'], collection_id)
+                collection_id = collection.get("Id")
+
+            jellyfin.add_to_collection(director[1]["movies"], collection_id)

@@ -16,7 +16,8 @@
             "buildArgs": [],
             "composeFile": "docker-compose.yml",
             "envFile": "letterboxd-jellyfin.env",
-            "envDeployType": "file"
+            "envDeployType": "file",
+            "host": "hogwarts-2"
         },
 
         "deploy": {

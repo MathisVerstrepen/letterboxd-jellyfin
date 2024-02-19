@@ -36,4 +36,4 @@ Detailed information about the process can be found in here :
 
 This script is not meant to be run on another system than mine. It is not very user friendly and I have no intention of making it so. If you want to use it, you will have to modify it to suit your needs. 
 
-Currently, the script is deployed as a docker container and run as a cronjob every 10 minutes. The docker container is built automatically using my custom deployment pipeline that can be found [not yet public].
+Currently, the script is deployed as a docker container and run as a cronjob every 10 minutes. The docker container is built automatically using my custom deployment pipeline that can be found [here](https://github.com/MathisVerstrepen/ApolloLaunchCore).

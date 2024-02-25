@@ -29,7 +29,7 @@ def make_request(url: str):
     proxy = PROXIES[i%3]
     i += 1
 
-    response = requests.get(url, timeout=5, proxies=proxy)
+    response = requests.get(url, timeout=20, proxies=proxy)
     if response.status_code == 200:
         return response
     

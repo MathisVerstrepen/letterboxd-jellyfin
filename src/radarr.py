@@ -33,7 +33,7 @@ def check_radarr_state(tmdb_id: str) -> RadarrState:
     headers = {
         "X-Api-Key": os.getenv("RADARR_API_KEY"),
     }
-    response = requests.get(url, params=params, headers=headers, timeout=5)
+    response = requests.get(url, params=params, headers=headers, timeout=20)
     if response.status_code != 200:
         print(response.status_code)
         print(response.content)
@@ -83,7 +83,7 @@ def add_to_radarr_download_queue(movies: list[str]) -> None:
     }
 
     for body in bodies:
-        response = requests.post(url, json=body, headers=headers, timeout=5)
+        response = requests.post(url, json=body, headers=headers, timeout=20)
         if response.status_code != 201:
             print(response.status_code)
             print(response.content)
@@ -104,7 +104,7 @@ def get_disk_space(folder: str) -> dict:
     headers = {
         "X-Api-Key": os.getenv("RADARR_API_KEY"),
     }
-    response = requests.get(url, headers=headers, timeout=5)
+    response = requests.get(url, headers=headers, timeout=20)
     if response.status_code != 200:
         print(response.status_code)
         print(response.content)

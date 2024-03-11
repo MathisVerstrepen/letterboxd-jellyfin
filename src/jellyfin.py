@@ -36,7 +36,7 @@ class Jellyfin:
             "IncludeItemTypes": "Movie",
             "fields": "MediaSources,People",
         }
-        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -64,7 +64,7 @@ class Jellyfin:
             "IncludeItemTypes": "Series",
             "fields": "MediaSources",
         }
-        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -85,7 +85,7 @@ class Jellyfin:
             "IncludeItemTypes": "Series",
             "fields": "MediaSources",
         }
-        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -121,7 +121,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Collections/" + user_collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
-        response = requests.post(url, headers=self.headers, params=params, timeout=5)
+        response = requests.post(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
             print(response.status_code)
             print(response.content)
@@ -134,7 +134,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
-        response = requests.post(url, headers=self.headers, params=params, timeout=5)
+        response = requests.post(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
             print(response.status_code)
             print(response.content)
@@ -155,7 +155,7 @@ class Jellyfin:
             "Recursive": "true",
             "IncludeItemTypes": "Movie",
         }
-        response = requests.get(url, params=params, headers=self.headers, timeout=5)
+        response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             print(response.status_code)
             print(response.content)
@@ -177,7 +177,7 @@ class Jellyfin:
 
         url = JELLYFIN_URL + "Collections/" + user_collection_id + "/Items"
         params = {"ids": ",".join(movie_tmdb)}
-        response = requests.delete(url, headers=self.headers, params=params, timeout=5)
+        response = requests.delete(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
             print(response.status_code)
             print(response.content)
@@ -196,7 +196,7 @@ class Jellyfin:
             "Limit": 1,
         }
 
-        response = requests.get(url, headers=self.headers, params=params, timeout=5)
+        response = requests.get(url, headers=self.headers, params=params, timeout=20)
 
         if response.status_code == 200:
             res = response.json()
@@ -226,7 +226,7 @@ class Jellyfin:
         }
 
         # Exécuter la requête
-        response = requests.post(url, headers=self.headers, params=params, timeout=5)
+        response = requests.post(url, headers=self.headers, params=params, timeout=20)
 
         # Vérifier le succès de la requête
         if response.status_code == 200:

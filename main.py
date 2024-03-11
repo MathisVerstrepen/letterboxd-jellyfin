@@ -39,6 +39,7 @@ if __name__ == "__main__":
         radarr_states: list[RadarrState] = [
             check_radarr_state(tmdb_id) for tmdb_id in tmdb_ids
         ]
+        radarr_states = [state for state in radarr_states if state]
         print(
             "Found "
             + str(len([state for state in radarr_states if state["hasFile"]]))

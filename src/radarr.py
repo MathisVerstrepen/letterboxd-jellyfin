@@ -41,7 +41,8 @@ def check_radarr_state(tmdb_id: str) -> RadarrState:
 
     res = response.json()
     if len(res) == 0:
-        raise RadarrException("No results found for " + tmdb_id)
+        print("No results found for " + tmdb_id)
+        return
 
     return {
         "hasFile": res[0]["hasFile"],

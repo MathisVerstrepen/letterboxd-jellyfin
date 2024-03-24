@@ -27,10 +27,10 @@ else:
 
 if __name__ == "__main__":
     jellyfin = Jellyfin()
-    
+
     for USERNAME in USERNAMES:
         print("Processing user " + USERNAME)
-        
+
         # Extract TMDB IDs from Letterboxd watchlist
         tmdb_ids = get_watchlist_tmdb_ids(USERNAME)
         print("Found " + str(len(tmdb_ids)) + " movies in the watchlist")
@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
         print("Adding " + str(len(items_to_download)) + " movies to download queue")
         add_to_radarr_download_queue(items_to_download)
-        
+
     directors = jellyfin.get_directors_stats()
 
     for director in directors:
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             if collection:
                 collection_id = collection
                 jellyfin.add_to_collection(director[1]["movies"], collection_id)
-    
+
     movies_stats = jellyfin.get_movies_stats()
     anime_movies_stats = jellyfin.get_animes_movies_stats()
     tv_show_stats = jellyfin.get_tv_show_stats()

@@ -45,7 +45,7 @@ def check_radarr_state(tmdb_id: str) -> RadarrState:
         return RadarrState()
 
     return {
-        "hasFile": res[0]["hasFile"],
+        "hasFile": res[0].get("movieFile", {}).get("relativePath", None) is not None,
         "monitored": res[0]["monitored"],
         "name": res[0]["title"],
         "tmdbId": res[0]["tmdbId"],

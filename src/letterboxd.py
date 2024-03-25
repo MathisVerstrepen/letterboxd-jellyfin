@@ -76,7 +76,11 @@ def get_watchlist_tmdb_ids(username: str) -> set:
         with ThreadPoolExecutor(max_workers=3) as executor:
             futures = []
             for frame in film_frames:
-                film_endpoint = frame["data-target-link"][1:]
+                try :
+                    film_endpoint = frame["data-target-link"][1:]
+                except KeyError:
+                    print("Error: No data-film-link found in frame")
+                    continue
 
                 future = executor.submit(extract_tmdb_id_from_endpoint, film_endpoint)
                 futures.append(future)

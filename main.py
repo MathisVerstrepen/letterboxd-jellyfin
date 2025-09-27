@@ -1,83 +1,44 @@
-import os
-import pathlib
-from dotenv import load_dotenv
-
-
-from src.letterboxd import get_watchlist_tmdb_ids
-from src.radarr import check_radarr_state, add_to_radarr_download_queue, RadarrState
+from src.config import config
+from src.logger import setup_logger
+from src.radarr import RadarrClient
 from src.jellyfin import Jellyfin
-
-from src.exceptions import JellyfinException
+from src.sync import SyncManager
 
 JellyfinId = str
 
-USERNAMES = ["Mathis_V", "Nimportnawak_", "arkc0s"]
-
-if pathlib.Path("/.dockerenv").exists():
-    print("Running in Docker")
-    os.chdir("/app")
-    load_dotenv("/app/.env")
-else:
-    print("Running locally")
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    load_dotenv(".env")
+# Initialize logger
+logger = setup_logger(config.get("system", {}).get("log_level", "INFO"))
 
 if __name__ == "__main__":
-    jellyfin = Jellyfin()
+    logger.info("--- Starting Letterboxd-Jellyfin Sync ---")
 
-    for USERNAME in USERNAMES:
-        print("Processing user " + USERNAME)
-
-        # Extract TMDB IDs from Letterboxd watchlist
-        tmdb_ids = get_watchlist_tmdb_ids(USERNAME)
-        print("Found " + str(len(tmdb_ids)) + " movies in the watchlist")
-
-        # Check status of extracted movies in Radarr
-        radarr_states: list[RadarrState] = [
-            check_radarr_state(tmdb_id) for tmdb_id in tmdb_ids
-        ]
-        radarr_states = [state for state in radarr_states if state]
-        print(
-            "Found "
-            + str(len([state for state in radarr_states if state["hasFile"]]))
-            + " movies in Jellyfin and "
-            + str(len([state for state in radarr_states if not state["hasFile"]]))
-            + " movies to download"
+    # Initialize API clients from config
+    try:
+        jellyfin_client = Jellyfin(
+            url=config["jellyfin"]["url"], api_key=config["jellyfin"]["api_key"]
         )
+        radarr_client = RadarrClient(
+            url=config["radarr"]["url"], api_key=config["radarr"]["api_key"]
+        )
+    except KeyError as e:
+        logger.error(f"Configuration error: Missing required key {e} in config.yaml")
+        exit(1)
 
-        # Get movies in the watchlist collection of the user in Jellyfin
-        collections_movies = jellyfin.get_collection_movies(USERNAME)
-        print("Found " + str(len(collections_movies)) + " movies in user collection")
+    # Loop through users defined in the config file
+    for user_config in config.get("users", []):
+        username = user_config.get("letterboxd_username")
+        if not username:
+            logger.warning("Skipping user entry with no 'letterboxd_username'")
+            continue
 
-        items_with_file: set[JellyfinId] = set()
-        items_to_add: set[JellyfinId] = set()
-        items_to_download: list[RadarrState] = []
-        for state in radarr_states:
-            if state["hasFile"]:
-                try:
-                    jellyfin_id = jellyfin.get_movie_id(
-                        state["name"], state["productionYear"]
-                    )
-                except JellyfinException as exc:
-                    print(exc)
-                    continue
+        logger.info(f"Processing user: {username}")
+        try:
+            manager = SyncManager(user_config, jellyfin_client, radarr_client)
+            manager.run()
+        except Exception as e:
+            logger.error(
+                f"An unexpected error occurred for user {user_config.get('letterboxd_username')}: {e}",
+                exc_info=True,
+            )
 
-                if jellyfin_id not in collections_movies:
-                    items_to_add.add(jellyfin_id)
-                items_with_file.add(jellyfin_id)
-
-            elif not state["monitored"]:
-                items_to_download.append(state)
-
-        # Remove movies in the collection that are not in the watchlist
-        items_to_remove: set[JellyfinId] = set()
-        for movie in collections_movies:
-            if movie not in items_with_file:
-                items_to_remove.add(movie)
-        jellyfin.remove_from_collection(items_to_remove, USERNAME)
-
-        print("Adding " + str(len(items_to_add)) + " new movies to collection")
-        jellyfin.add_to_user_collection(items_to_add, USERNAME)
-
-        print("Adding " + str(len(items_to_download)) + " movies to download queue")
-        add_to_radarr_download_queue(items_to_download)
+    logger.info("--- Sync process finished ---")

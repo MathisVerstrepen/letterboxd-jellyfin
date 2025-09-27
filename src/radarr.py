@@ -1,14 +1,10 @@
-# pylint: disable=missing-module-docstring
 from typing import TypedDict
-import os
-import json
 import requests
 
 from src.exceptions import RadarrException
+from requests.exceptions import JSONDecodeError
+from src.logger import setup_logger
 
-# get env variables from .env file
-
-RADARR_URL = "http://192.168.2.64:7878/api/v3/"
 
 class RadarrState(TypedDict):
     """
@@ -23,99 +19,92 @@ class RadarrState(TypedDict):
     is_animation: bool
 
 
-def check_radarr_state(tmdb_id: str) -> RadarrState:
-    """
-    Check if a file exists at a given URL
-    """
-
-    url = RADARR_URL + "movie/lookup"
-    params = {"term": "tmdb:" + tmdb_id}
-    headers = {
-        "X-Api-Key": os.getenv("RADARR_API_KEY"),
-    }
-    response = requests.get(url, params=params, headers=headers, timeout=20)
-    if response.status_code != 200:
-        print(response.status_code)
-        print(response.content)
-        raise RadarrException("Unable to make request to " + url)
-
-    res = response.json()
-    if len(res) == 0:
-        print("No results found for " + tmdb_id)
-        return RadarrState()
-
-    return {
-        "hasFile": res[0].get("movieFile", {}).get("relativePath", None) is not None,
-        "monitored": res[0]["monitored"],
-        "name": res[0]["title"],
-        "tmdbId": res[0]["tmdbId"],
-        "productionYear": res[0]["year"],
-        "is_animation": "Animation" in res[0]["genres"],
-    }
-
-
-def add_to_radarr_download_queue(movies: list[str]) -> None:
-    """
-    Add a movie to the download queue
-    """
-
-    with open("params.json", "r", encoding="utf-8") as file:
-        params = json.load(file)
-
-    bodies = [
-        {
-            "tmdbId": movie["tmdbId"],
-            "title": movie["name"],
-            "year": movie["productionYear"],
-            "qualityProfileId": 11,
-            "monitored": True,
-            "rootFolderPath": params["radarr_root_paths"][
-                "movies" if not movie["is_animation"] else "anime_movies"
-            ],
-            "addOptions": {"searchForMovie": True},
-        }
-        for movie in movies
-    ]
-
-    url = RADARR_URL + "movie"
-    headers = {
-        "X-Api-Key": os.getenv("RADARR_API_KEY"),
-    }
-
-    for body in bodies:
-        response = requests.post(url, json=body, headers=headers, timeout=20)
-        if response.status_code != 201:
-            print(response.status_code)
-            print(response.content)
+class RadarrClient:
+    def __init__(self, url: str, api_key: str):
+        if not url.endswith("/api/v3"):
+            url = url.rstrip("/") + "/api/v3"
             
-def get_disk_space(folder: str) -> dict:
-    """ Get the disk space of the server where Radarr is running
-    
-    Params:
-        folder (str): The folder to check the disk space of
-
-    Raises:
-        RadarrException: Unable to make request to /api/v3/diskspace
-
-    Returns:
-        dict: The response from the API in JSON format
-    """
-    url = RADARR_URL + "diskspace"
-    headers = {
-        "X-Api-Key": os.getenv("RADARR_API_KEY"),
-    }
-    response = requests.get(url, headers=headers, timeout=20)
-    if response.status_code != 200:
-        print(response.status_code)
-        print(response.content)
-        raise RadarrException("Unable to make request to " + url)
-    
-    res = response.json()
-    
-    folder_stats = {}
-    for disk in res:
-        if disk["path"] == folder:
-            folder_stats = disk
-            break
+        self.base_url = url
+        self.headers = {"X-Api-Key": api_key}
+        self.logger = setup_logger()
         
-    return folder_stats
+        self.logger.info(f"RadarrClient initialized with base URL: {self.base_url}")
+
+    def check_radarr_state(self, tmdb_id: str) -> RadarrState | None:
+        """
+        Check if a file exists for a given TMDB ID in Radarr.
+        """
+        url = f"{self.base_url}/movie/lookup"
+        params = {"term": f"tmdb:{tmdb_id}"}
+        
+        try:
+            response = requests.get(url, params=params, headers=self.headers, timeout=20)
+            response.raise_for_status()
+
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                self.logger.error(
+                    f"Radarr returned non-JSON response for TMDB ID {tmdb_id}. "
+                    f"Content-Type: '{content_type}'. This often indicates a proxy/auth issue."
+                )
+                self.logger.debug(f"Response text: {response.text[:200]}...")
+                return None
+
+            res = response.json()
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Failed to make request to Radarr for TMDB ID {tmdb_id}: {e}")
+            return None
+        except JSONDecodeError:
+            self.logger.error(f"Failed to decode JSON from Radarr for TMDB ID {tmdb_id}.")
+            return None
+
+        if not res:
+            self.logger.info(f"No results found in Radarr for TMDB ID: {tmdb_id}")
+            return None
+
+        movie_data = res[0]
+        return {
+            "hasFile": movie_data.get("movieFile") is not None,
+            "monitored": movie_data.get("monitored", False),
+            "name": movie_data.get("title"),
+            "tmdbId": movie_data.get("tmdbId"),
+            "productionYear": movie_data.get("year"),
+            "is_animation": "Animation" in movie_data.get("genres", []),
+        }
+
+    def get_movies_state(self, tmdb_ids: set[str]) -> list[RadarrState]:
+        """Processes a list of TMDB IDs and returns their Radarr states."""
+        states = []
+        for tmdb_id in tmdb_ids:
+            state = self.check_radarr_state(tmdb_id)
+            if state:
+                states.append(state)
+        return states
+
+    def add_to_radarr_download_queue(
+        self, movies: list[dict], root_path: str, quality_profile_id: int
+    ):
+        bodies = [
+            {
+                "tmdbId": movie["tmdbId"],
+                "title": movie["name"],
+                "year": movie["productionYear"],
+                "qualityProfileId": quality_profile_id,
+                "monitored": True,
+                "rootFolderPath": root_path,
+                "addOptions": {"searchForMovie": True},
+            }
+            for movie in movies
+        ]
+
+        url = self.base_url + "movie"
+
+        for body in bodies:
+            response = requests.post(url, json=body, headers=self.headers, timeout=20)
+            if response.status_code != 201:
+                raise RadarrException("Unable to make request to " + url)
+
+        for body in bodies:
+            response = requests.post(url, json=body, headers=self.headers, timeout=20)
+            if response.status_code != 201:
+                raise RadarrException("Unable to make request to " + url)

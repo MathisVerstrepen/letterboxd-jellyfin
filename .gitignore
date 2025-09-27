@@ -1,4 +1,12 @@
+# Python
 venv
 __pycache__
 *.env
 .mypy_cache
+
+# Config files
+config.yaml
+proxies.txt
+
+# Dev environment
+dev-environment

@@ -1,0 +1,57 @@
+# General settings
+system:
+  # How often to run the sync process, in minutes.
+  sync_interval: 10
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+  # Optional: Path to log file inside the container (e.g., /config/app.log)
+  log_file: 
+
+# --- Service Connections ---
+jellyfin:
+  url: "http://jellyfin:8096"
+  api_key: "YOUR_JELLYFIN_API_KEY"
+
+radarr:
+  url: "http://radarr:7878"
+  api_key: "YOUR_RADARR_API_KEY"
+  # Default root path for movies. Can be overridden per-user.
+  # This replaces the hardcoded paths in params.json
+  root_folder_path: "/movies"
+  # Default quality profile ID. Can be found in Radarr settings.
+  quality_profile_id: 1
+
+# --- Letterboxd & Proxies ---
+letterboxd:
+  # The number of parallel requests to make to Letterboxd.
+  # If using proxies, a good starting point is the number of proxies you have.
+  # If not using proxies, keep this low (e.g., 2-4) to avoid being rate-limited.
+  max_concurrent_requests: 10
+  
+  # Choose ONE of the following methods for proxy configuration.
+  # The script will prioritize 'proxy_file' if it is set.
+
+  # Method 1: Load proxies from a file (recommended for long lists).
+  # The file should contain one proxy per line in the format:
+  # IP:PORT:USERNAME:PASSWORD
+  proxy_file: "proxies.txt" # Path relative to the script's root directory.
+  proxy_type: "socks5"       # Type of proxy: 'http', 'https', or 'socks5'.
+
+  # Method 2: Define a short list of proxies directly.
+  # These should be fully-formed URLs. This list is ignored if 'proxy_file' is set.
+  proxies: []
+    # - "socks5://user:pass@host1:port"
+    # - "socks5://user:pass@host2:port"
+
+# --- User Configuration ---
+# List all users you want to sync here.
+users:
+  - letterboxd_username: "Mathis_V"
+    # The script will find or create a Jellyfin collection with this name.
+    jellyfin_collection_name: "Mathis's Watchlist"
+
+# --- Optional Notifications ---
+# Use a service like Apprise to send notifications on sync completion or failure.
+notifications:
+  # Example: discord://webhook_id/webhook_token
+  apprise_url: "" 

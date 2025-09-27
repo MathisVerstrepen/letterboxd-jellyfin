@@ -1,0 +1,37 @@
+version: "3.7"
+
+services:
+  radarr-dev:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr-dev
+    environment:
+      - PUID=1000 # Your user ID
+      - PGID=1000 # Your group ID
+      - TZ=Etc/UTC
+    volumes:
+      # Mount the dedicated config folder
+      - ./dev-environment/radarr-dev/config:/config
+      # Mount the shared media folder
+      - ./dev-environment/media/movies:/movies
+    ports:
+      # Map to a different host port to avoid conflicts
+      - "7879:7878"
+    restart: unless-stopped
+
+  jellyfin-dev:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin-dev
+    environment:
+      - PUID=1000 # Your user ID
+      - PGID=1000 # Your group ID
+      - TZ=Etc/UTC
+    volumes:
+      # Mount the dedicated config folder
+      - ./dev-environment/jellyfin-dev/config:/config
+      # Mount the shared media folder for Jellyfin to read from
+      - ./dev-environment/media/movies:/media/movies
+    ports:
+      # Map to different host ports to avoid conflicts
+      - "8097:8096" # Main UI
+      - "8921:8920" # Optional: DLNA
+    restart: unless-stopped

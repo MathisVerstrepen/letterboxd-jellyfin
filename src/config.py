@@ -3,6 +3,7 @@ from typing import Any
 
 CONFIG_PATH = "config.yaml"
 
+
 def load_config() -> dict[str, Any]:
     """Loads the YAML configuration file."""
     try:
@@ -16,5 +17,5 @@ def load_config() -> dict[str, Any]:
         print(f"ERROR: Could not parse configuration file: {e}")
         exit(1)
 
-# Load the config once at startup
+
 config = load_config()

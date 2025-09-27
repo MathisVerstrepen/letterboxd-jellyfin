@@ -1,7 +1,6 @@
 from typing import TypedDict
 import requests
 
-from src.exceptions import RadarrException
 from requests.exceptions import JSONDecodeError
 from src.logger import setup_logger
 
@@ -23,11 +22,11 @@ class RadarrClient:
     def __init__(self, url: str, api_key: str):
         if not url.endswith("/api/v3"):
             url = url.rstrip("/") + "/api/v3"
-            
+
         self.base_url = url
         self.headers = {"X-Api-Key": api_key}
         self.logger = setup_logger()
-        
+
         self.logger.info(f"RadarrClient initialized with base URL: {self.base_url}")
 
     def check_radarr_state(self, tmdb_id: str) -> RadarrState | None:
@@ -36,9 +35,11 @@ class RadarrClient:
         """
         url = f"{self.base_url}/movie/lookup"
         params = {"term": f"tmdb:{tmdb_id}"}
-        
+
         try:
-            response = requests.get(url, params=params, headers=self.headers, timeout=20)
+            response = requests.get(
+                url, params=params, headers=self.headers, timeout=20
+            )
             response.raise_for_status()
 
             content_type = response.headers.get("Content-Type", "")
@@ -52,10 +53,14 @@ class RadarrClient:
 
             res = response.json()
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"Failed to make request to Radarr for TMDB ID {tmdb_id}: {e}")
+            self.logger.error(
+                f"Failed to make request to Radarr for TMDB ID {tmdb_id}: {e}"
+            )
             return None
         except JSONDecodeError:
-            self.logger.error(f"Failed to decode JSON from Radarr for TMDB ID {tmdb_id}.")
+            self.logger.error(
+                f"Failed to decode JSON from Radarr for TMDB ID {tmdb_id}."
+            )
             return None
 
         if not res:
@@ -97,14 +102,19 @@ class RadarrClient:
             for movie in movies
         ]
 
-        url = self.base_url + "movie"
+        url = self.base_url + "/movie"
 
         for body in bodies:
             response = requests.post(url, json=body, headers=self.headers, timeout=20)
             if response.status_code != 201:
-                raise RadarrException("Unable to make request to " + url)
-
-        for body in bodies:
-            response = requests.post(url, json=body, headers=self.headers, timeout=20)
-            if response.status_code != 201:
-                raise RadarrException("Unable to make request to " + url)
+                if (
+                    response.status_code == 400
+                    and "has already been added" in response.text
+                ):
+                    self.logger.info(
+                        f"Movie {body.get('title')} already exists in Radarr."
+                    )
+                    continue
+                self.logger.error(
+                    f"Failed to add movie {body.get('title')} to Radarr. Status: {response.status_code}, Response: {response.text}"
+                )

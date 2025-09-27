@@ -1,5 +1,4 @@
-# pylint: disable=missing-module-docstring
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
 import bs4
 import logging
@@ -65,84 +64,102 @@ def extract_tmdb_id_from_endpoint(
 from typing import Optional
 
 
-def get_watchlist_tmdb_ids(
-    username: str, proxy_manager: ProxyManager, max_workers: int
-) -> set:
-    watchlist_soup: Optional[BeautifulSoup] = None
-    """Get the TMDB IDs of all films in a user's watchlist
+def get_new_watchlist_tmdb_ids(
+    username: str,
+    proxy_manager: ProxyManager,
+    max_workers: int,
+    latest_synced_tmdb_id: str | None,
+) -> list[str]:
+    """
+    Get TMDB IDs of new films in a user's watchlist since the last sync, using parallel workers.
+    Stops when it encounters `latest_synced_tmdb_id`.
 
     Args:
-        username (str): The Letterboxd username
+        username (str): The Letterboxd username.
+        proxy_manager (ProxyManager): The proxy manager instance.
+        max_workers (int): The number of parallel requests for scraping.
+        latest_synced_tmdb_id (str | None): The TMDB ID of the last movie synced.
 
     Returns:
-        set: The TMDB IDs of the films in the watchlist
+        list: A list of new TMDB IDs, with the most recently added film first.
     """
     page_idx = 1
     logger.info(
-        f"[{username}] Getting watchlist page {page_idx}, using up to {max_workers} parallel workers."
+        f"[{username}] Starting incremental watchlist scrape with {max_workers} workers..."
     )
+    if latest_synced_tmdb_id:
+        logger.info(
+            f"[{username}] Will stop when TMDB ID '{latest_synced_tmdb_id}' is found."
+        )
 
     watchlist_page = make_letterboxd_request(f"{username}/watchlist/", proxy_manager)
     if not watchlist_page:
-        logger.error(
-            f"[{username}] Could not fetch initial watchlist page. Aborting scrape for this user."
-        )
-        return set()
+        logger.error(f"[{username}] Could not fetch initial watchlist page. Aborting.")
+        return []
 
-    watchlist_soup = BeautifulSoup(watchlist_page.content, "html.parser")
-    tmdb_ids = set()
+    watchlist_soup: BeautifulSoup | None = BeautifulSoup(
+        watchlist_page.content, "html.parser"
+    )
+    new_tmdb_ids = []
+    sync_stopped = False
 
-    while watchlist_soup is not None:
+    while watchlist_soup is not None and not sync_stopped:
         film_frames = watchlist_soup.find_all(
             "div", {"data-component-class": "LazyPoster"}
         )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for frame in film_frames:
+            # Submit all movie detail scrapes on the current page to the thread pool
+            future_to_endpoint = {
+                executor.submit(
+                    extract_tmdb_id_from_endpoint,
+                    str(frame["data-target-link"][1:]),
+                    proxy_manager,
+                ): frame
+                for frame in film_frames
+                if isinstance(frame, bs4.element.Tag)
+                and "data-target-link" in frame.attrs
+            }
+
+            # Create a list of futures in the order they appear on the page
+            ordered_futures = [
+                future
+                for future, frame in future_to_endpoint.items()
+                if frame in film_frames
+            ]
+
+            # Process results in order to respect the watchlist sequence
+            for future in ordered_futures:
                 try:
-                    if (
-                        isinstance(frame, bs4.element.Tag)
-                        and "data-target-link" in frame.attrs
-                    ):
-                        film_endpoint = str(frame["data-target-link"][1:])
-                    else:
-                        logger.warning(
-                            "Found a non-Tag frame or frame without 'data-target-link', skipping."
-                        )
-                        continue
-                except KeyError:
-                    logger.warning(
-                        "Found a film frame without a 'data-target-link', skipping."
+                    tmdb_id = future.result()
+                    if tmdb_id:
+                        if tmdb_id == latest_synced_tmdb_id:
+                            logger.info(
+                                f"[{username}] Found last synced movie (TMDB ID: {tmdb_id}). Stopping scrape."
+                            )
+                            sync_stopped = True
+                            break  # Stop processing movies on this page
+                        new_tmdb_ids.append(tmdb_id)
+                except Exception as exc:
+                    logger.error(
+                        f"An exception occurred while fetching a TMDB ID: {exc}"
                     )
-                    continue
 
-                future = executor.submit(
-                    extract_tmdb_id_from_endpoint, film_endpoint, proxy_manager
-                )
-                futures.append(future)
-
-            for future in as_completed(futures):
-                tmdb_id = future.result()
-                if tmdb_id:
-                    tmdb_ids.add(tmdb_id)
+        if sync_stopped:
+            break  # Stop processing further pages
 
         next_page_link = watchlist_soup.find("a", {"class": "next"})
         if next_page_link is not None and isinstance(next_page_link, bs4.element.Tag):
             page_idx += 1
             logger.info(f"[{username}] Getting watchlist page {page_idx}")
-
             watchlist_page = make_letterboxd_request(
                 str(next_page_link["href"]), proxy_manager
             )
             if watchlist_page:
                 watchlist_soup = BeautifulSoup(watchlist_page.content, "html.parser")
             else:
-                logger.warning(
-                    f"[{username}] Failed to fetch page {page_idx}, stopping pagination."
-                )
                 watchlist_soup = None
         else:
             watchlist_soup = None
 
-    return tmdb_ids
+    return new_tmdb_ids

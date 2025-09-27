@@ -1,5 +1,3 @@
-import os
-import json
 import sys
 from pathlib import Path
 import requests
@@ -9,6 +7,7 @@ sys.path.append(str(root_path))
 
 from src.exceptions import RadarrException, JellyfinException
 
+
 class Jellyfin:
     def __init__(self, url: str, api_key: str) -> None:
         if url.endswith("/"):
@@ -17,7 +16,7 @@ class Jellyfin:
         self.headers = {
             "Authorization": f'MediaBrowser Token="{api_key}"',
         }
-        self._movie_cache: dict[tuple[str, int], str] | None = None  # Cache for movie lookups
+        self._movie_cache: dict[tuple[str, int], str] | None = None
 
     def _get_movie_lookup_cache(self) -> dict:
         """
@@ -26,7 +25,7 @@ class Jellyfin:
         """
         if self._movie_cache is None:
             self._movie_cache = {}
-            all_movies_response = self.get_movies()  # Fetch all movies
+            all_movies_response = self.get_movies()
             for movie in all_movies_response.get("Items", []):
                 key = (movie.get("Name"), movie.get("ProductionYear"))
                 self._movie_cache[key] = movie.get("Id")
@@ -39,24 +38,12 @@ class Jellyfin:
         cache = self._get_movie_lookup_cache()
         return cache.get((movie_name, movie_year))
 
-    def get_or_create_collection(self, collection_name: str) -> str | None:
-        """
-        Gets the ID of a collection by name. If it doesn't exist, creates it.
-        """
-        collection_id = self.get_collection_by_name(collection_name)
-        if collection_id:
-            return collection_id
-
-        # If not found, create it
-        new_collection = self.create_collection(collection_name)
-        return new_collection.get("Id") if new_collection else None
-
     def get_movies(self) -> dict:
         """
         Get all movies in the Jellyfin library
         """
 
-        url = self.base_url + "Items"
+        url = self.base_url + "/Items"
         params = {
             "Recursive": "true",
             "IncludeItemTypes": "Movie",
@@ -64,8 +51,6 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
         res = response.json()
@@ -84,7 +69,7 @@ class Jellyfin:
         Get all series in the Jellyfin library
         """
 
-        url = self.base_url + "Items"
+        url = self.base_url + "/Items"
         params = {
             "Recursive": "true",
             "IncludeItemTypes": "Series",
@@ -92,8 +77,6 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
         res = response.json()
@@ -105,7 +88,7 @@ class Jellyfin:
         Get serie details from its ID
         """
 
-        url = self.base_url + "Shows/" + serie_id + "/Episodes"
+        url = self.base_url + "/Shows/" + serie_id + "/Episodes"
         params = {
             "Recursive": "true",
             "IncludeItemTypes": "Series",
@@ -113,13 +96,13 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
         return response.json()
 
-    def add_to_user_collection(self, movie_ids: list[str], username: str, collection_id: str) -> None:
+    def add_to_user_collection(
+        self, movie_ids: list[str], username: str, collection_id: str
+    ) -> None:
         """
         Add a movie to a collection
         """
@@ -127,12 +110,10 @@ class Jellyfin:
         if collection_id is None:
             raise JellyfinException("Unable to find collection ID for " + username)
 
-        url = self.base_url + "Collections/" + collection_id + "/Items"
+        url = self.base_url + "/Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
         response = requests.post(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
     def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
@@ -140,13 +121,32 @@ class Jellyfin:
         Add a movie to a collection
         """
 
-        url = self.base_url + "Collections/" + collection_id + "/Items"
+        url = self.base_url + "/Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
         response = requests.post(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
+
+    def get_played_movies_from_collection(
+        self, collection_id: str, user_id: str
+    ) -> list[str]:
+        """Gets a list of movie IDs from a collection that a specific user has played."""
+        url = f"{self.base_url}/Users/{user_id}/Items"
+        params = {
+            "ParentId": collection_id,
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie",
+            "Filters": "IsPlayed",
+        }
+        response = requests.get(url, params=params, headers=self.headers, timeout=20)
+
+        played_movie_ids = []
+        if response.status_code == 200:
+            data = response.json()
+            for item in data.get("Items", []):
+                played_movie_ids.append(item.get("Id"))
+
+        return played_movie_ids
 
     def get_collection_movies(self, username: str, collection_id: str) -> set[str]:
         """
@@ -156,7 +156,7 @@ class Jellyfin:
         if collection_id is None:
             raise JellyfinException("Unable to find collection ID for " + username)
 
-        url = self.base_url + "Items"
+        url = self.base_url + "/Items"
         params = {
             "ParentId": collection_id,
             "Recursive": "true",
@@ -164,79 +164,40 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
         res = response.json()
 
         return set(map(lambda x: x["Id"], res["Items"]))
 
-    def remove_from_collection(self, movie_tmdb: set[str], username: str, collection_id: str) -> None:
-        """
-        Remove a movie from a collection
-        """
-        print("Removing " + str(len(movie_tmdb)) + " movies from collection")
+    def remove_from_collection(self, movie_ids: list[str], collection_id: str) -> None:
+        """Remove movies from a collection by their Jellyfin IDs."""
+        if not movie_ids:
+            return
 
         if collection_id is None:
-            raise JellyfinException("Unable to find collection ID for " + username)
+            raise JellyfinException("Cannot remove from a null collection ID")
 
-        url = self.base_url + "Collections/" + collection_id + "/Items"
-        params = {"ids": ",".join(movie_tmdb)}
+        url = self.base_url + "/Collections/" + collection_id + "/Items"
+        params = {"ids": ",".join(movie_ids)}
         response = requests.delete(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
-            print(response.status_code)
-            print(response.content)
             raise RadarrException("Unable to make request to " + url)
 
-    def get_collection_by_name(self, collection_name: str) -> str:
+    def get_user_id(self, username: str) -> str | None:
         """
-        Get a collection from its name
-        """
-
-        url = self.base_url + "/Items"
-        params: dict[str, str | int] = {
-            "SearchTerm": collection_name,
-            "IncludeItemTypes": "BoxSet",
-            "Recursive": "true",
-            "Limit": 1,
-        }
-
-        response = requests.get(url, headers=self.headers, params=params, timeout=20)
-
-        if response.status_code == 200:
-            res = response.json()
-            items = res.get("Items", [])
-
-            for item in items:
-                if item.get("Name").lower() == collection_name.lower():
-                    return item.get("Id", "")
-
-        else:
-            print(f"Erreur: {response.status_code}")
-            print(response.content)
-
-        return ""
-
-    def create_collection(self, collection_name: str, parent_collection_id: str = ""):
-        """
-        Create a collection
+        Get a user's ID from their username
         """
 
-        url = self.base_url + "/Collections"
-        params = {
-            "name": collection_name,
-            "parentId": parent_collection_id,
-        }
+        url = self.base_url + "/Users"
+        response = requests.get(url, headers=self.headers, timeout=20)
+        if response.status_code != 200:
+            raise RadarrException("Unable to make request to " + url)
 
-        # Exécuter la requête
-        response = requests.post(url, headers=self.headers, params=params, timeout=20)
+        res = response.json()
 
-        # Vérifier le succès de la requête
-        if response.status_code == 200:
-            return response.json()
+        for user in res:
+            if user.get("Name") == username:
+                return user.get("Id")
 
-        # Gérer les erreurs ou l'absence de résultats
-        else:
-            print(f"Erreur: {response.status_code}")
-            print(response.content)
+        return None

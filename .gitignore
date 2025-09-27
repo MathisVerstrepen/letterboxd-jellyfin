@@ -7,6 +7,7 @@ __pycache__
 # Config files
 config.yaml
 proxies.txt
+sync_state.json
 
 # Dev environment
 dev-environment

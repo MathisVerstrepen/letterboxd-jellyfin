@@ -1,11 +1,13 @@
-version: "3.1"
-name: letterboxd_jellyfin
+version: "3.8"
 
 services:
-  cron:
-    container_name: cron
-    image: registry.diikstra.fr/letterboxd-jellyfin-cron:${IMAGE_TAG}
-    build: 
-      context: .
-      dockerfile: ./Dockerfile
+  letterboxd-sync:
+    build: .
+    container_name: letterboxd-sync
     restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./sync_state.json:/app/sync_state.json
+      # Optional: Mount a local file for proxies.txt if you use it
+      # - ./proxies.txt:/app/proxies.txt:ro
+    network_mode: host

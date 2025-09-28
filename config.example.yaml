@@ -35,7 +35,7 @@ letterboxd:
   # The file should contain one proxy per line in the format:
   # IP:PORT:USERNAME:PASSWORD
   proxy_file: "proxies.txt" # Path relative to the script's root directory.
-  proxy_type: "socks5"       # Type of proxy: 'http', 'https', or 'socks5'.
+  proxy_type: "socks5h"       # Type of proxy: 'http', 'https', 'socks5' or 'socks5h' (no DNS resolution).
 
   # Method 2: Define a short list of proxies directly.
   # These should be fully-formed URLs. This list is ignored if 'proxy_file' is set.

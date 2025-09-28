@@ -127,40 +127,74 @@ class Jellyfin:
         self, movie_ids: list[str], username: str, collection_id: str
     ) -> None:
         """
-        Add a movie to a collection
+        Add movies to a collection, batching requests to avoid URL length limits
         """
+        if not movie_ids:
+            return
 
         if collection_id is None:
             raise JellyfinException("Unable to find collection ID for " + username)
 
+        # Batch size to avoid URL length limits (HTTP 414 error)
+        batch_size = 50
         url = self.base_url + "/Collections/" + collection_id + "/Items"
-        params = {"ids": ",".join(movie_ids)}
-        response = requests.post(url, headers=self.headers, params=params, timeout=20)
-        if response.status_code != 204:
-            raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+
+        total_added = 0
+        for i in range(0, len(movie_ids), batch_size):
+            batch = movie_ids[i : i + batch_size]
+            params = {"ids": ",".join(batch)}
+            response = requests.post(
+                url, headers=self.headers, params=params, timeout=20
             )
+            if response.status_code != 204:
+                raise JellyfinException(
+                    f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                )
 
-    def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
-        """
-        Add a movie to a collection
-        """
-
-        url = self.base_url + "/Collections/" + collection_id + "/Items"
-        params = {"ids": ",".join(movie_ids)}
-
-        response = requests.post(url, headers=self.headers, params=params, timeout=20)
-
-        if response.status_code != 204:
-            self.logger.error(
-                f"Failed to add movies to collection. Status: {response.status_code}, Response: {response.text}"
-            )
-            raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            total_added += len(batch)
+            self.logger.debug(
+                f"Added batch of {len(batch)} movies to collection {collection_id} for user {username}"
             )
 
         self.logger.info(
-            f"Successfully added {len(movie_ids)} movies to collection {collection_id}"
+            f"Successfully added {total_added} movies to collection for user {username}"
+        )
+
+    def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
+        """
+        Add movies to a collection, batching requests to avoid URL length limits
+        """
+        if not movie_ids:
+            return
+
+        # Batch size to avoid URL length limits (HTTP 414 error)
+        batch_size = 50
+        url = self.base_url + "/Collections/" + collection_id + "/Items"
+
+        total_added = 0
+        for i in range(0, len(movie_ids), batch_size):
+            batch = movie_ids[i : i + batch_size]
+            params = {"ids": ",".join(batch)}
+
+            response = requests.post(
+                url, headers=self.headers, params=params, timeout=20
+            )
+
+            if response.status_code != 204:
+                self.logger.error(
+                    f"Failed to add movies batch to collection. Status: {response.status_code}, Response: {response.text}"
+                )
+                raise JellyfinException(
+                    f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                )
+
+            total_added += len(batch)
+            self.logger.debug(
+                f"Added batch of {len(batch)} movies to collection {collection_id}"
+            )
+
+        self.logger.info(
+            f"Successfully added {total_added} movies to collection {collection_id}"
         )
 
     def get_played_movies_from_collection(

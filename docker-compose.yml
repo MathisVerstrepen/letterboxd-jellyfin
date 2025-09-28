@@ -7,7 +7,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./sync_state.json:/app/sync_state.json
+      - .:/app/data
       # Optional: Mount a local file for proxies.txt if you use it
       # - ./proxies.txt:/app/proxies.txt:ro
     network_mode: host
+    environment:
+      - SYNC_STATE_PATH=/app/data/sync_state.json

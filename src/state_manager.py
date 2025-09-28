@@ -2,7 +2,7 @@ import json
 import os
 from typing import Any
 
-STATE_FILE_PATH = "sync_state.json"
+STATE_FILE_PATH = os.getenv("SYNC_STATE_PATH", "sync_state.json")
 
 def load_state() -> dict[str, Any]:
     """

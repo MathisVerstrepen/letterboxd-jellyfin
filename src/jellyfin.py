@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
 import requests
+from src.logger import setup_logger
 
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
-from src.exceptions import RadarrException, JellyfinException
+from src.exceptions import JellyfinException
 
 
 class Jellyfin:
@@ -17,6 +18,7 @@ class Jellyfin:
             "Authorization": f'MediaBrowser Token="{api_key}"',
         }
         self._movie_cache: dict[tuple[str, int], str] | None = None
+        self.logger = setup_logger()
 
         # Test connection on initialization
         self._test_connection()
@@ -66,7 +68,9 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
         res = response.json()
 
@@ -92,7 +96,9 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
         res = response.json()
 
@@ -111,7 +117,9 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
         return response.json()
 
@@ -129,7 +137,9 @@ class Jellyfin:
         params = {"ids": ",".join(movie_ids)}
         response = requests.post(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
     def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
         """
@@ -138,9 +148,20 @@ class Jellyfin:
 
         url = self.base_url + "/Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
+
         response = requests.post(url, headers=self.headers, params=params, timeout=20)
+
         if response.status_code != 204:
-            raise RadarrException("Unable to make request to " + url)
+            self.logger.error(
+                f"Failed to add movies to collection. Status: {response.status_code}, Response: {response.text}"
+            )
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
+
+        self.logger.info(
+            f"Successfully added {len(movie_ids)} movies to collection {collection_id}"
+        )
 
     def get_played_movies_from_collection(
         self, collection_id: str, user_id: str
@@ -179,7 +200,9 @@ class Jellyfin:
         }
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
         res = response.json()
 
@@ -197,7 +220,9 @@ class Jellyfin:
         params = {"ids": ",".join(movie_ids)}
         response = requests.delete(url, headers=self.headers, params=params, timeout=20)
         if response.status_code != 204:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
     def get_user_id(self, username: str) -> str | None:
         """
@@ -207,7 +232,9 @@ class Jellyfin:
         url = self.base_url + "/Users"
         response = requests.get(url, headers=self.headers, timeout=20)
         if response.status_code != 200:
-            raise RadarrException("Unable to make request to " + url)
+            raise JellyfinException(
+                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+            )
 
         res = response.json()
 

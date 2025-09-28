@@ -134,3 +134,5 @@ class RadarrClient:
                 self.logger.error(
                     f"Failed to add movie {body.get('title')} to Radarr. Status: {response.status_code}, Response: {response.text}"
                 )
+            else:
+                self.logger.info(f"Added movie {body.get('title')} to Radarr download queue.")

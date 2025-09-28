@@ -54,14 +54,14 @@ def extract_tmdb_id_from_endpoint(
         logger.warning(f"Could not find TMDB link for movie at endpoint: {endpoint}")
         return None
     try:
+        if "/tv/" in tmdb_link_tag["href"]:
+            logger.info(f"Skipping TV show at endpoint: {endpoint}")
+            return None
         tmdb_id = str(tmdb_link_tag["href"]).split("/")[-2]
         return tmdb_id
     except IndexError:
         logger.warning(f"Could not parse TMDB ID from href: {tmdb_link_tag['href']}")
         return None
-
-
-from typing import Optional
 
 
 def get_new_watchlist_tmdb_ids(

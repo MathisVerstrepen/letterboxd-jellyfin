@@ -2,6 +2,7 @@ from typing import TypedDict
 import requests
 
 from requests.exceptions import JSONDecodeError
+from src.exceptions import RadarrException
 from src.logger import setup_logger
 
 
@@ -28,6 +29,21 @@ class RadarrClient:
         self.logger = setup_logger()
 
         self.logger.info(f"RadarrClient initialized with base URL: {self.base_url}")
+
+        # Test connection on initialization
+        self._test_connection()
+
+    def _test_connection(self) -> None:
+        """Test the connection to Radarr server."""
+        url = self.base_url + "/system/status"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                raise RadarrException(
+                    f"Failed to connect to Radarr server: HTTP {response.status_code}"
+                )
+        except requests.exceptions.RequestException as e:
+            raise RadarrException(f"Unable to connect to Radarr server: {e}")
 
     def check_radarr_state(self, tmdb_id: str) -> RadarrState | None:
         """

@@ -18,6 +18,21 @@ class Jellyfin:
         }
         self._movie_cache: dict[tuple[str, int], str] | None = None
 
+        # Test connection on initialization
+        self._test_connection()
+
+    def _test_connection(self) -> None:
+        """Test the connection to Jellyfin server."""
+        url = self.base_url + "/System/Info"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                raise JellyfinException(
+                    f"Failed to connect to Jellyfin server: HTTP {response.status_code}"
+                )
+        except requests.exceptions.RequestException as e:
+            raise JellyfinException(f"Unable to connect to Jellyfin server: {e}")
+
     def _get_movie_lookup_cache(self) -> dict:
         """
         Builds a cache for mapping (Title, Year) to Jellyfin ID.

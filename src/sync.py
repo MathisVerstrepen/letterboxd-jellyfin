@@ -68,7 +68,7 @@ class SyncManager:
                 if state:
                     # Immediately request in Radarr, mimicking Go version
                     self.radarr.add_to_radarr_download_queue(
-                        [state.__dict__],
+                        [state],
                         radarr_config.get("root_folder_path"),
                         radarr_config.get("quality_profile_id"),
                     )

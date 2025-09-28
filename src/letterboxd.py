@@ -16,6 +16,7 @@ def make_letterboxd_request(
 
     Args:
         endpoint (str): The Letterboxd API endpoint
+        proxy_manager (ProxyManager): The proxy manager instance
         retries (int): The number of times to retry the request if it fails
 
     Returns:
@@ -26,12 +27,18 @@ def make_letterboxd_request(
     for attempt in range(retries):
         proxy = proxy_manager.get_proxy()
         try:
-            # Pass the selected proxy to the generic make_request function
-            return make_request(url, proxy)
+            # Pass the selected proxy to the generic make_request function with fallback setting from proxy manager
+            return make_request(url, proxy, allow_fallback=proxy_manager.allow_fallback)
         except Exception as e:
-            logger.warning(
-                f"Request to {url} failed (attempt {attempt + 1}/{retries}). Error: {e}"
-            )
+            if proxy:
+                proxy_url = proxy.get("https", proxy.get("http", "unknown"))
+                logger.warning(
+                    f"Request to {url} failed with proxy {proxy_url} (attempt {attempt + 1}/{retries}). Error: {e}"
+                )
+            else:
+                logger.warning(
+                    f"Request to {url} failed (attempt {attempt + 1}/{retries}). Error: {e}"
+                )
 
     logger.error(f"Failed to make request to {url} after {retries} retries.")
     return None  # Return None on persistent failure

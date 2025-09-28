@@ -4,6 +4,8 @@ import time
 import threading
 import requests
 from typing import Any
+import socket
+from urllib.parse import urlparse
 
 from src.exceptions import RequestException
 
@@ -58,6 +60,8 @@ class ProxyManager:
         self.proxies: list[dict[str, str]] = []
         self.current_index = 0
         self.lock = threading.Lock()
+        self.validate_on_startup = config.get("validate_proxies_on_startup", True)
+        self.allow_fallback = config.get("allow_direct_fallback", True)
         self._load_proxies(config)
 
     def _load_proxies(self, config: dict[str, Any]):
@@ -76,6 +80,11 @@ class ProxyManager:
 
         if self.proxies:
             logger.info(f"Successfully loaded {len(self.proxies)} proxies.")
+            # Test proxy connectivity and filter out unreachable ones if enabled
+            if self.validate_on_startup:
+                self._validate_proxies()
+            else:
+                logger.info("Proxy validation is disabled. Using all loaded proxies.")
         else:
             logger.info("No proxy configuration found. Requests will be made directly.")
 
@@ -107,6 +116,64 @@ class ProxyManager:
         """Loads proxies from a list of full proxy URLs."""
         for proxy_url in proxy_list:
             self.proxies.append({"http": proxy_url, "https": proxy_url})
+
+    def _test_proxy_connectivity(self, proxy_dict: dict[str, str]) -> bool:
+        """
+        Test if a proxy is reachable by making a simple connection test.
+        Returns True if the proxy is working, False otherwise.
+        """
+        try:
+            # Extract proxy details from the proxy URL
+            proxy_url = proxy_dict.get("https", proxy_dict.get("http"))
+            if not proxy_url:
+                return False
+                
+            # Parse the proxy URL to get host and port
+            parsed = urlparse(proxy_url)
+            host = parsed.hostname
+            port = parsed.port
+            
+            if not host or not port:
+                return False
+            
+            # Test basic connectivity with a short timeout
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)  # 5 seconds timeout
+            result = sock.connect_ex((host, port))
+            sock.close()
+            
+            return result == 0
+        except Exception as e:
+            logger.debug(f"Proxy connectivity test failed for {proxy_dict}: {e}")
+            return False
+
+    def _validate_proxies(self):
+        """
+        Test all loaded proxies and remove unreachable ones.
+        """
+        if not self.proxies:
+            return
+            
+        logger.info("Testing proxy connectivity...")
+        working_proxies = []
+        
+        for proxy in self.proxies:
+            if self._test_proxy_connectivity(proxy):
+                working_proxies.append(proxy)
+            else:
+                proxy_url = proxy.get("https", proxy.get("http", "unknown"))
+                logger.warning(f"Proxy {proxy_url} is not reachable, removing from list")
+        
+        original_count = len(self.proxies)
+        self.proxies = working_proxies
+        working_count = len(self.proxies)
+        
+        if working_count == 0:
+            logger.error("No working proxies found! Requests will be made without proxies.")
+        elif working_count < original_count:
+            logger.warning(f"Only {working_count}/{original_count} proxies are working.")
+        else:
+            logger.info(f"All {working_count} proxies are working.")
 
     def get_proxy(self) -> dict[str, str] | None:
         """
@@ -149,7 +216,7 @@ def get_session() -> requests.Session:
 
 
 def make_request(
-    url: str, proxy: dict | None = None, delay_range: tuple[float, float] = (0.5, 2.0)
+    url: str, proxy: dict | None = None, delay_range: tuple[float, float] = (0.5, 2.0), allow_fallback: bool = True
 ) -> requests.Response:
     """
     Makes a GET request with anti-detection measures, optionally using a provided proxy.
@@ -158,6 +225,7 @@ def make_request(
         url: The URL to request
         proxy: Optional proxy configuration
         delay_range: Tuple of (min_delay, max_delay) in seconds for random delays
+        allow_fallback: If True, fallback to direct connection if proxy fails
     """
     # Add random delay to avoid appearing too automated
     delay = random.uniform(delay_range[0], delay_range[1])
@@ -168,11 +236,40 @@ def make_request(
     # Get fresh browser headers for each request
     headers = get_browser_headers()
 
-    try:
-        response = session.get(
-            url, timeout=20, proxies=proxy, headers=headers, allow_redirects=True
-        )
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        return response
-    except requests.exceptions.RequestException as e:
-        raise RequestException(f"Unable to make request to {url}: {e}") from e
+    # First try with proxy if provided
+    if proxy:
+        try:
+            response = session.get(
+                url, timeout=20, proxies=proxy, headers=headers, allow_redirects=True
+            )
+            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+            return response
+        except requests.exceptions.RequestException as e:
+            proxy_url = proxy.get("https", proxy.get("http", "unknown"))
+            logger.warning(f"Request via proxy {proxy_url} failed: {e}")
+            
+            # If fallback is allowed, try direct connection
+            if allow_fallback:
+                logger.info(f"Attempting direct connection to {url}")
+                try:
+                    response = session.get(
+                        url, timeout=20, proxies=None, headers=headers, allow_redirects=True
+                    )
+                    response.raise_for_status()
+                    logger.info(f"Direct connection to {url} successful")
+                    return response
+                except requests.exceptions.RequestException as fallback_e:
+                    logger.error(f"Direct connection also failed: {fallback_e}")
+                    raise RequestException(f"Unable to make request to {url} via proxy or direct connection: {e}") from e
+            else:
+                raise RequestException(f"Unable to make request to {url}: {e}") from e
+    else:
+        # No proxy provided, make direct request
+        try:
+            response = session.get(
+                url, timeout=20, proxies=None, headers=headers, allow_redirects=True
+            )
+            response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+            return response
+        except requests.exceptions.RequestException as e:
+            raise RequestException(f"Unable to make request to {url}: {e}") from e

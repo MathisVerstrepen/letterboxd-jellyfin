@@ -66,10 +66,18 @@ class SyncManager:
             for tmdb_id in new_tmdb_ids:
                 state = self.radarr.check_radarr_state(tmdb_id)
                 if state:
+                    folder_path = radarr_config.get("root_folder_path", "")
+                    if radarr_config.get("animated_movies", {}).get(
+                        "enabled"
+                    ) and state.get("is_animation"):
+                        folder_path = radarr_config.get("animated_movies", {}).get(
+                            "root_folder_path", folder_path
+                        )
+
                     # Immediately request in Radarr, mimicking Go version
                     self.radarr.add_to_radarr_download_queue(
                         [state],
-                        radarr_config.get("root_folder_path"),
+                        folder_path,
                         radarr_config.get("quality_profile_id"),
                     )
                     radarr_states_for_new_movies.append(state)

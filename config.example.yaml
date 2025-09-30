@@ -18,8 +18,15 @@ radarr:
   # Default root path for movies. Can be overridden per-user.
   # This replaces the hardcoded paths in params.json
   root_folder_path: "/movies"
+
   # Default quality profile ID. Can be found in Radarr settings.
   quality_profile_id: 1
+
+  animated_movies:
+    # Set to true if you want to add animated movies to a separate folder.
+    enabled: true
+    # Root path for animated movies. Only used if 'animated_movies.enabled' is true.
+    root_folder_path: "/movies/Animated"
 
 # --- Letterboxd & Proxies ---
 letterboxd:

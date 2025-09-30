@@ -59,9 +59,3 @@ users:
     # The collection id in Jellyfin to sync with. If the collection does not exist, it will skip the jellyfin sync
     # and only add movies to Radarr.
     jellyfin_collection_id: ""
-
-# --- Optional Notifications ---
-# Use a service like Apprise to send notifications on sync completion or failure.
-notifications:
-  # Example: discord://webhook_id/webhook_token
-  apprise_url: "" 

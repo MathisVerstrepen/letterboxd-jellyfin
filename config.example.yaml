@@ -50,6 +50,12 @@ letterboxd:
     # - "socks5://user:pass@host1:port"
     # - "socks5://user:pass@host2:port"
 
+  # Proxy behavior settings
+  # Test proxy connectivity on startup and remove unreachable proxies
+  validate_proxies_on_startup: true
+  # Allow fallback to direct connection if proxy fails
+  allow_direct_fallback: true
+
 # --- User Configuration ---
 # List all users you want to sync here.
 users:

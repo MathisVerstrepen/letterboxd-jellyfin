@@ -33,6 +33,7 @@ The script operates in a continuous loop, performing the following actions for e
 The entire process is automated and runs on a schedule you define.
 
 ```mermaid
+%%{ init : { "theme" : "default" }}%%
 sequenceDiagram
     participant Scheduler as "entrypoint.sh"
     participant Main as "main.py"

@@ -1,4 +1,5 @@
 from typing import TypedDict
+import time
 import requests
 
 from requests.exceptions import JSONDecodeError
@@ -20,12 +21,13 @@ class RadarrState(TypedDict):
 
 
 class RadarrClient:
-    def __init__(self, url: str, api_key: str):
+    def __init__(self, url: str, api_key: str, timeout: int = 60):
         if not url.endswith("/api/v3"):
             url = url.rstrip("/") + "/api/v3"
 
         self.base_url = url
         self.headers = {"X-Api-Key": api_key}
+        self.timeout = timeout
         self.logger = setup_logger()
 
         self.logger.info(f"RadarrClient initialized with base URL: {self.base_url}")
@@ -37,7 +39,7 @@ class RadarrClient:
         """Test the connection to Radarr server."""
         url = self.base_url + "/system/status"
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
+            response = requests.get(url, headers=self.headers, timeout=self.timeout)
             if response.status_code != 200:
                 raise RadarrException(
                     f"Failed to connect to Radarr server: HTTP {response.status_code}"
@@ -54,7 +56,7 @@ class RadarrClient:
 
         try:
             response = requests.get(
-                url, params=params, headers=self.headers, timeout=20
+                url, params=params, headers=self.headers, timeout=self.timeout
             )
             response.raise_for_status()
 
@@ -121,18 +123,37 @@ class RadarrClient:
         url = self.base_url + "/movie"
 
         for body in bodies:
-            response = requests.post(url, json=body, headers=self.headers, timeout=20)
-            if response.status_code != 201:
-                if (
-                    response.status_code == 400
-                    and "has already been added" in response.text
-                ):
-                    self.logger.info(
-                        f"Movie {body.get('title')} already exists in Radarr."
+            for attempt in range(3):
+                try:
+                    response = requests.post(
+                        url, json=body, headers=self.headers, timeout=self.timeout
                     )
-                    continue
-                self.logger.error(
-                    f"Failed to add movie {body.get('title')} to Radarr. Status: {response.status_code}, Response: {response.text}"
-                )
-            else:
-                self.logger.info(f"Added movie {body.get('title')} to Radarr download queue.")
+                    if response.status_code != 201:
+                        if (
+                            response.status_code == 400
+                            and "has already been added" in response.text
+                        ):
+                            self.logger.info(
+                                f"Movie {body.get('title')} already exists in Radarr."
+                            )
+                            break
+                        self.logger.error(
+                            f"Failed to add movie {body.get('title')} to Radarr. Status: {response.status_code}, Response: {response.text}"
+                        )
+                        break
+                    else:
+                        self.logger.info(
+                            f"Added movie {body.get('title')} to Radarr download queue."
+                        )
+                        break
+                except requests.exceptions.RequestException as e:
+                    if attempt < 2:
+                        wait_time = 2**attempt
+                        self.logger.warning(
+                            f"Request to Radarr timed out/failed for '{body.get('title')}'. Retrying in {wait_time}s... Error: {e}"
+                        )
+                        time.sleep(wait_time)
+                    else:
+                        self.logger.error(
+                            f"Failed to add movie {body.get('title')} to Radarr after 3 attempts: {e}"
+                        )

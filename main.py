@@ -17,7 +17,9 @@ if __name__ == "__main__":
             url=config["jellyfin"]["url"], api_key=config["jellyfin"]["api_key"]
         )
         radarr_client = RadarrClient(
-            url=config["radarr"]["url"], api_key=config["radarr"]["api_key"]
+            url=config["radarr"]["url"],
+            api_key=config["radarr"]["api_key"],
+            timeout=config["radarr"].get("timeout", 60),
         )
     except KeyError as e:
         logger.error(f"Configuration error: Missing required key {e} in config.yaml")

@@ -13,6 +13,7 @@ from src.results import (
     WatchlistEntry,
     WatchlistResult,
 )
+from src.state_manager import StateCheckpoint
 
 
 def record(status, tmdb_id=None, title=None, year=None, reason=None):
@@ -106,14 +107,16 @@ def test_discovery_checkpoints_before_radarr_and_completes(monkeypatch):
     manager, state, _, radarr, checkpoint = build_manager()
     entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
     set_watchlist(monkeypatch, watchlist([entry]))
-    snapshots = []
-    checkpoint.side_effect = lambda: snapshots.append(deepcopy(state)) or StateSaveResult()
+    checkpoints = []
+    checkpoint.side_effect = lambda delta: checkpoints.append(delta) or StateSaveResult()
     radarr.check_radarr_state.return_value = RadarrLookupResult(movie_state())
     result = manager.run()
     assert result.completed
-    assert snapshots[0]["cursor"] == {"kind": "letterboxd", "value": "film/a/"}
-    assert snapshots[0]["movies"]["film/a/"]["status"] == "pending_radarr"
+    assert checkpoints[0].cursor == {"kind": "letterboxd", "value": "film/a/"}
+    assert checkpoints[0].movie_changes[0].movie["status"] == "pending_radarr"
+    assert all(isinstance(delta, StateCheckpoint) for delta in checkpoints)
     assert state["movies"]["film/a/"]["completion_reason"] == "jellyfin_added"
+    assert checkpoints[0].movie_changes[0].movie["status"] == "pending_radarr"
     assert result.queue_counts == {
         "radarr_add": 1,
         "jellyfin_add": 1,

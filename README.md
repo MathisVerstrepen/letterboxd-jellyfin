@@ -37,7 +37,7 @@ The service runs one cycle immediately after startup. Each cycle performs the fo
 3.  **Update Jellyfin**:
     -   For each newly discovered movie that already has a Radarr file, it looks for the movie in Jellyfin and adds it to the configured collection. Failed Jellyfin operations remain pending without repeating a completed Radarr stage.
     -   It checks the collection for movies watched by the configured Jellyfin user and removes them.
-4.  **Checkpoint State**: It atomically checkpoints the Letterboxd cursor and each movie's processing status after discovery and every successful or retryable stage transition.
+4.  **Checkpoint State**: It transactionally checkpoints the Letterboxd cursor and each changed movie's processing status in SQLite after discovery and every successful or retryable stage transition.
 
 > **Current limitation:** After a successful Radarr queue attempt reports that a movie has no file, that movie is not revisited automatically when its download later completes. Jellyfin collection addition is attempted only when Radarr reports that it already has a file during the successful queue attempt. Add later downloads to Jellyfin manually if needed.
 
@@ -54,7 +54,7 @@ sequenceDiagram
     participant State as "state_manager.py"
 
     Scheduler->>Main: Start cycle immediately
-    Main->>State: Load versioned user/movie state
+    Main->>State: Open or initialize SQLite state
     State-->>Main: Per-user cursors and pending work
 
     loop Each configured user (serially)
@@ -73,7 +73,7 @@ sequenceDiagram
         opt Collection configured
             SyncManager->>Jellyfin: Find and remove watched collection items
         end
-        SyncManager->>State: Atomically checkpoint each transition
+        SyncManager->>State: Transactionally checkpoint each transition
         SyncManager-->>Main: User result
     end
 
@@ -118,7 +118,7 @@ sequenceDiagram
     docker compose up -d --build
     ```
 
-The first cycle starts immediately. If no persisted state exists, it processes each user's full Letterboxd watchlist; large watchlists may therefore take longer on the first run.
+The first cycle starts immediately. If no persisted state exists, it processes each user's full Letterboxd watchlist; large watchlists may therefore take longer on the first run. Production Compose stores active state in `/app/data/sync_state.db`. On the first SQLite start only, an existing `/app/data/sync_state.json` in either the legacy flat format or version-2 format is imported before any external service client is initialized.
 
 ## Configuration (`config.yaml`)
 
@@ -185,7 +185,13 @@ Configuration is loaded once at process startup. Restart the container after cha
 docker compose restart letterboxd-sync
 ```
 
-A restart triggers a cycle immediately. Persisted state is retained at `/app/data/sync_state.json` by production Compose, so normal restarts remain incremental and retry pending movie stages. Removing or losing that state causes the next run to process the full watchlist again. Legacy flat username-to-TMDB-ID state is migrated atomically to the versioned format before service work; this migration is one way, so retain a copy of legacy state if downgrade recovery is required.
+A restart triggers a cycle immediately. SQLite state is retained at `/app/data/sync_state.db` by production Compose, so normal restarts remain incremental and retry pending movie stages. `SYNC_STATE_DB_PATH` selects the authoritative SQLite database. `SYNC_STATE_PATH` selects only the legacy JSON import source. If `SYNC_STATE_DB_PATH` is unset, the database is derived beside the JSON source by replacing a final `.json` suffix with `.db`, or by appending `.db` otherwise.
+
+When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. Once a database exists it always takes precedence: a corrupt, foreign, or unsupported database stops the cycle rather than falling back to potentially stale JSON. New databases are created with mode `0600` where the platform supports it; existing file ownership and permissions are left unchanged.
+
+Before upgrading, stop the service and back up both `sync_state.json` and any existing `sync_state.db` using your normal filesystem backup process. To restore SQLite state, stop the service and replace the database with a known-good database created by this application. Do not delete an invalid database expecting automatic JSON recovery: move or replace it deliberately after preserving it for diagnosis. Deleting the database while leaving the retained JSON causes the next start to import that now-stale pre-migration snapshot again and may repeat remote work.
+
+Downgrading to a JSON-only release is not lossless. The retained JSON contains none of the checkpoints committed after SQLite migration. Stop the service, restore or select the retained JSON for the older release, and expect that work completed since migration can be retried. SQLite checkpoints provide transactional local persistence, but a remote operation that succeeds immediately before a checkpoint failure remains at-least-once and can also be repeated.
 
 ## Health and observability
 

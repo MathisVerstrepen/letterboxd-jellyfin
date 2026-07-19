@@ -72,6 +72,12 @@ class StateLoadResult:
 
 
 @dataclass(frozen=True)
+class StateInitializationResult:
+    failed_items: int = 0
+    migrated: bool = False
+
+
+@dataclass(frozen=True)
 class StateSaveResult:
     failed_items: int = 0
 

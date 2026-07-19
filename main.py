@@ -12,7 +12,7 @@ from src.logger import get_logger, log_context, new_run_id, setup_logger
 from src.observability import ObservabilityService
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
-from src.state_manager import empty_user_state, load_state, save_state
+from src.state_manager import SQLiteStateStore, StateCheckpoint
 from src.sync import SyncManager
 
 
@@ -45,24 +45,17 @@ def _run_sync_cycle(
     started_datetime = datetime.now(UTC)
     started_at = utc_timestamp(started_datetime)
     started_monotonic = time.monotonic()
-
     observability.begin_cycle()
+    store = SQLiteStateStore()
     try:
         logger.info(
             "Sync run started",
             extra={"event": "sync_run_started"},
         )
-        state_result = load_state()
-        sync_state = state_result.data
-        failures["state"] += state_result.failed_items
-        if state_result.failed_items:
+        initialization = store.initialize()
+        failures["state"] += initialization.failed_items
+        if initialization.failed_items:
             state_persistence_ok = False
-
-        if state_persistence_ok and state_result.migrated:
-            migration_save = save_state(sync_state)
-            failures["state"] += migration_save.failed_items
-            if migration_save.failed_items:
-                state_persistence_ok = False
 
         clients_ready = False
         if state_persistence_ok:
@@ -110,23 +103,22 @@ def _run_sync_cycle(
 
                 with log_context(user=username):
                     try:
-                        users_state = sync_state["users"]
-                        if username not in users_state:
-                            users_state[username] = empty_user_state()
-                            user_save = save_state(sync_state)
-                            failures["state"] += user_save.failed_items
-                            if user_save.failed_items:
-                                state_persistence_ok = False
-                                break
+                        user_load = store.load_or_create_user(username)
+                        failures["state"] += user_load.failed_items
+                        if user_load.failed_items:
+                            state_persistence_ok = False
+                            break
 
-                        def checkpoint() -> Any:
-                            return save_state(sync_state)
+                        def checkpoint(
+                            delta: StateCheckpoint, _username: str = username
+                        ) -> Any:
+                            return store.checkpoint_user(_username, delta)
 
                         manager = SyncManager(
                             user_config,
                             jellyfin_client,
                             radarr_client,
-                            users_state[username],
+                            user_load.data,
                             checkpoint,
                             config.get("letterboxd", {}),
                             radarr_config,
@@ -158,6 +150,10 @@ def _run_sync_cycle(
             exc_info=True,
         )
     finally:
+        close_result = store.close()
+        failures["state"] += close_result.failed_items
+        if close_result.failed_items:
+            state_persistence_ok = False
         finished_datetime = datetime.now(UTC)
         finished_at = utc_timestamp(finished_datetime)
         duration = round(time.monotonic() - started_monotonic, 3)

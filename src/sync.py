@@ -10,6 +10,7 @@ from src.logger import get_logger
 from src.proxies import ProxyManager
 from src.radarr import RadarrClient
 from src.results import StateSaveResult, SyncResult, empty_failures, empty_queue_counts
+from src.state_manager import MovieStateChange, StateCheckpoint
 
 
 def _movie_record(
@@ -35,7 +36,7 @@ class SyncManager:
         jellyfin: Jellyfin,
         radarr: RadarrClient,
         user_state: dict[str, Any],
-        checkpoint: Callable[[], StateSaveResult],
+        checkpoint: Callable[[StateCheckpoint], StateSaveResult],
         letterboxd_config: dict[str, Any],
         radarr_config: dict[str, Any],
     ) -> None:
@@ -52,9 +53,12 @@ class SyncManager:
         self.logger = get_logger("sync")
 
     def _checkpoint(
-        self, failures: dict[str, int], queue_counts: dict[str, int]
+        self,
+        checkpoint: StateCheckpoint,
+        failures: dict[str, int],
+        queue_counts: dict[str, int],
     ) -> SyncResult | None:
-        result = self.checkpoint()
+        result = self.checkpoint(checkpoint)
         if result.failed_items:
             failures["state"] += result.failed_items
             return SyncResult(
@@ -64,8 +68,8 @@ class SyncManager:
             )
         return None
 
-    def _merge_discovery(self, watchlist) -> bool:
-        changed = False
+    def _merge_discovery(self, watchlist) -> StateCheckpoint | None:
+        movie_changes = []
         movies = self.user_state["movies"]
         cursor = self.user_state["cursor"]
 
@@ -73,7 +77,9 @@ class SyncManager:
             boundary = movies.get(watchlist.boundary_uri)
             if boundary and boundary["status"] == "retry_letterboxd":
                 del movies[watchlist.boundary_uri]
-                changed = True
+                movie_changes.append(
+                    MovieStateChange("delete", watchlist.boundary_uri)
+                )
 
         for entry in watchlist.entries:
             existing = movies.get(entry.endpoint)
@@ -86,7 +92,9 @@ class SyncManager:
                     movies[entry.endpoint] = _movie_record("retry_letterboxd")
                 else:
                     continue
-                changed = True
+                movie_changes.append(
+                    MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
+                )
             elif (
                 existing["status"] == "retry_letterboxd"
                 and entry.detail.outcome == "movie"
@@ -94,14 +102,17 @@ class SyncManager:
                 movies[entry.endpoint] = _movie_record(
                     "pending_radarr", tmdb_id=entry.detail.tmdb_id
                 )
-                changed = True
+                movie_changes.append(
+                    MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
+                )
             elif (
                 existing["status"] == "retry_letterboxd"
                 and entry.detail.outcome == "not_movie"
             ):
                 del movies[entry.endpoint]
-                changed = True
+                movie_changes.append(MovieStateChange("delete", entry.endpoint))
 
+        cursor_changed = False
         if watchlist.scan_complete:
             new_cursor = (
                 {"kind": "letterboxd", "value": watchlist.cursor_uri}
@@ -110,8 +121,14 @@ class SyncManager:
             )
             if cursor != new_cursor:
                 self.user_state["cursor"] = new_cursor
-                changed = True
-        return changed
+                cursor_changed = True
+        if not cursor_changed and not movie_changes:
+            return None
+        return StateCheckpoint(
+            cursor_changed=cursor_changed,
+            cursor=self.user_state["cursor"] if cursor_changed else None,
+            movie_changes=tuple(movie_changes),
+        )
 
     def _retry_letterboxd(
         self,
@@ -125,11 +142,15 @@ class SyncManager:
             return None
         if detail.outcome == "not_movie":
             del self.user_state["movies"][endpoint]
+            change = MovieStateChange("delete", endpoint)
         else:
             self.user_state["movies"][endpoint] = _movie_record(
                 "pending_radarr", tmdb_id=detail.tmdb_id
             )
-        return self._checkpoint(failures, queue_counts)
+            change = MovieStateChange(
+                "upsert", endpoint, self.user_state["movies"][endpoint]
+            )
+        return self._checkpoint(StateCheckpoint(movie_changes=(change,)), failures, queue_counts)
 
     def _process_radarr(
         self,
@@ -144,7 +165,13 @@ class SyncManager:
         if lookup.state is None:
             if movie["status"] != "retry_radarr":
                 movie["status"] = "retry_radarr"
-                return self._checkpoint(failures, queue_counts)
+                return self._checkpoint(
+                    StateCheckpoint(
+                        movie_changes=(MovieStateChange("upsert", endpoint, movie),)
+                    ),
+                    failures,
+                    queue_counts,
+                )
             return None
 
         state = lookup.state
@@ -165,7 +192,13 @@ class SyncManager:
         if queue_result.succeeded != 1 or queue_result.failed_items:
             if movie["status"] != "retry_radarr":
                 movie["status"] = "retry_radarr"
-                return self._checkpoint(failures, queue_counts)
+                return self._checkpoint(
+                    StateCheckpoint(
+                        movie_changes=(MovieStateChange("upsert", endpoint, movie),)
+                    ),
+                    failures,
+                    queue_counts,
+                )
             return None
 
         if not state.get("hasFile"):
@@ -183,7 +216,15 @@ class SyncManager:
                 title=state["name"],
                 year=state["productionYear"],
             )
-        return self._checkpoint(failures, queue_counts)
+        return self._checkpoint(
+            StateCheckpoint(
+                movie_changes=(
+                    MovieStateChange("upsert", endpoint, self.user_state["movies"][endpoint]),
+                )
+            ),
+            failures,
+            queue_counts,
+        )
 
     def _process_jellyfin(
         self,
@@ -196,14 +237,30 @@ class SyncManager:
             self.user_state["movies"][endpoint] = _movie_record(
                 "completed", movie["tmdb_id"], completion_reason="collection_disabled"
             )
-            return self._checkpoint(failures, queue_counts)
+            return self._checkpoint(
+                StateCheckpoint(
+                    movie_changes=(
+                        MovieStateChange(
+                            "upsert", endpoint, self.user_state["movies"][endpoint]
+                        ),
+                    )
+                ),
+                failures,
+                queue_counts,
+            )
         try:
             jellyfin_id = self.jellyfin.get_movie_id(movie["title"], movie["year"])
         except Exception:
             failures["jellyfin"] += 1
             if movie["status"] != "retry_jellyfin":
                 movie["status"] = "retry_jellyfin"
-                return self._checkpoint(failures, queue_counts)
+                return self._checkpoint(
+                    StateCheckpoint(
+                        movie_changes=(MovieStateChange("upsert", endpoint, movie),)
+                    ),
+                    failures,
+                    queue_counts,
+                )
             return None
         if not jellyfin_id:
             self.user_state["movies"][endpoint] = _movie_record(
@@ -213,7 +270,17 @@ class SyncManager:
                 movie["year"],
                 "jellyfin_not_found",
             )
-            return self._checkpoint(failures, queue_counts)
+            return self._checkpoint(
+                StateCheckpoint(
+                    movie_changes=(
+                        MovieStateChange(
+                            "upsert", endpoint, self.user_state["movies"][endpoint]
+                        ),
+                    )
+                ),
+                failures,
+                queue_counts,
+            )
 
         add_result = self.jellyfin.add_to_collection(
             [jellyfin_id], self.jellyfin_collection_id
@@ -232,7 +299,15 @@ class SyncManager:
             movie["status"] = "retry_jellyfin"
         else:
             return None
-        return self._checkpoint(failures, queue_counts)
+        return self._checkpoint(
+            StateCheckpoint(
+                movie_changes=(
+                    MovieStateChange("upsert", endpoint, self.user_state["movies"][endpoint]),
+                )
+            ),
+            failures,
+            queue_counts,
+        )
 
     def run(self) -> SyncResult:
         """Run one user's discovery, retryable movie work, and watched removal."""
@@ -268,8 +343,11 @@ class SyncManager:
                     "outcome": watchlist.outcome,
                 },
             )
-            if self._merge_discovery(watchlist):
-                stopped = self._checkpoint(failures, queue_counts)
+            discovery_checkpoint = self._merge_discovery(watchlist)
+            if discovery_checkpoint:
+                stopped = self._checkpoint(
+                    discovery_checkpoint, failures, queue_counts
+                )
                 if stopped:
                     return stopped
 

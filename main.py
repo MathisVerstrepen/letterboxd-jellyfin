@@ -1,3 +1,4 @@
+import errno
 import signal
 import threading
 import time
@@ -199,12 +200,28 @@ def main() -> int:
     try:
         try:
             observability.start()
-        except OSError:
-            logger.error(
-                "Observability server could not start",
-                extra={"event": "observability_server_start_failed", "host": host, "port": port},
-                exc_info=True,
-            )
+        except OSError as error:
+            if error.errno == errno.EADDRINUSE:
+                logger.error(
+                    "Configured observability port is already in use; free the port "
+                    "or change observability.port in config.yaml",
+                    extra={
+                        "event": "configured_observability_port_already_in_use",
+                        "host": host,
+                        "port": port,
+                    },
+                    exc_info=True,
+                )
+            else:
+                logger.error(
+                    "Observability server could not start",
+                    extra={
+                        "event": "observability_server_start_failed",
+                        "host": host,
+                        "port": port,
+                    },
+                    exc_info=True,
+                )
             return 1
         logger.info(
             "Observability server started",

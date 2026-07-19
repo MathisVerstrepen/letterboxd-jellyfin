@@ -217,6 +217,13 @@ The service provides structured JSON logs plus `/health`, `/ready`, and `/metric
 
 ## Development
 
+A Python 3.11 development environment can install the application and test dependencies and run the complete test suite without starting Docker or contacting configured services:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
 A `docker-compose.dev.yml` file is included to start separate Radarr and Jellyfin instances for development. It does not start the Letterboxd-Jellyfin sync service. The development services use `latest` images, store data under `dev-environment/`, and publish Radarr on port `7879` and Jellyfin on ports `8097`/`8921`.
 
 To use it, run:

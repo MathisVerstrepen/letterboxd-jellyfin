@@ -1,12 +1,22 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from bs4 import BeautifulSoup
 import bs4
-import logging
+from dataclasses import dataclass
 
+from src.logger import get_logger
 from src.proxies import ProxyManager, make_request
+from src.results import WatchlistResult
 
 URL = "https://letterboxd.com/"
-logger = logging.getLogger("letterboxd-sync")
+logger = get_logger("letterboxd")
+
+
+@dataclass(frozen=True)
+class _DetailResult:
+    tmdb_id: str | None = None
+    failed_items: int = 0
+    skipped_items: int = 0
 
 
 def make_letterboxd_request(
@@ -29,28 +39,26 @@ def make_letterboxd_request(
         try:
             # Pass the selected proxy to the generic make_request function with fallback setting from proxy manager
             return make_request(url, proxy, allow_fallback=proxy_manager.allow_fallback)
-        except Exception as e:
-            if proxy:
-                proxy_url = proxy.get("https", proxy.get("http", "unknown"))
-                logger.warning(
-                    f"Request to {url} failed with proxy {proxy_url} (attempt {attempt + 1}/{retries}). Error: {e}"
-                )
-            else:
-                logger.warning(
-                    f"Request to {url} failed (attempt {attempt + 1}/{retries}). Error: {e}"
-                )
+        except Exception:
+            logger.warning(
+                "Letterboxd request failed; retrying",
+                extra={"event": "letterboxd_request_retry", "attempt": attempt + 1},
+            )
 
-    logger.error(f"Failed to make request to {url} after {retries} retries.")
+    logger.error(
+        "Letterboxd request exhausted retries",
+        extra={"event": "letterboxd_scrape_failed", "stage": "letterboxd"},
+    )
     return None  # Return None on persistent failure
 
 
 def extract_tmdb_id_from_endpoint(
     endpoint: str, proxy_manager: ProxyManager
-) -> str | None:
+) -> _DetailResult:
     """From a Letterboxd film endpoint, extract the TMDB ID."""
     movie_page = make_letterboxd_request(endpoint, proxy_manager)
     if movie_page is None:
-        return None
+        return _DetailResult(failed_items=1)
 
     movie_soup = BeautifulSoup(movie_page.content, "html.parser")
     tmdb_link_tag = movie_soup.find("a", attrs={"data-track-action": "TMDB"})
@@ -58,17 +66,24 @@ def extract_tmdb_id_from_endpoint(
         not isinstance(tmdb_link_tag, bs4.element.Tag)
         or "href" not in tmdb_link_tag.attrs
     ):
-        logger.warning(f"Could not find TMDB link for movie at endpoint: {endpoint}")
-        return None
+        logger.warning(
+            "Letterboxd film detail has no TMDB link",
+            extra={"event": "letterboxd_detail_failed", "stage": "letterboxd"},
+        )
+        return _DetailResult(failed_items=1)
     try:
         if "/tv/" in tmdb_link_tag["href"]:
-            logger.info(f"Skipping TV show at endpoint: {endpoint}")
-            return None
+            return _DetailResult(skipped_items=1)
         tmdb_id = str(tmdb_link_tag["href"]).split("/")[-2]
-        return tmdb_id
-    except IndexError:
-        logger.warning(f"Could not parse TMDB ID from href: {tmdb_link_tag['href']}")
-        return None
+        if not tmdb_id:
+            raise IndexError
+        return _DetailResult(tmdb_id=tmdb_id)
+    except (IndexError, TypeError):
+        logger.warning(
+            "Letterboxd TMDB identifier could not be extracted",
+            extra={"event": "letterboxd_detail_failed", "stage": "letterboxd"},
+        )
+        return _DetailResult(failed_items=1)
 
 
 def get_new_watchlist_tmdb_ids(
@@ -76,7 +91,7 @@ def get_new_watchlist_tmdb_ids(
     proxy_manager: ProxyManager,
     max_workers: int,
     latest_synced_tmdb_id: str | None,
-) -> list[str]:
+) -> WatchlistResult:
     """
     Get TMDB IDs of new films in a user's watchlist since the last sync, using parallel workers.
     Stops when it encounters `latest_synced_tmdb_id`.
@@ -92,22 +107,29 @@ def get_new_watchlist_tmdb_ids(
     """
     page_idx = 1
     logger.info(
-        f"[{username}] Starting incremental watchlist scrape with {max_workers} workers..."
+        "Starting incremental Letterboxd watchlist scrape",
+        extra={"event": "letterboxd_scrape_started"},
     )
     if latest_synced_tmdb_id:
         logger.info(
-            f"[{username}] Will stop when TMDB ID '{latest_synced_tmdb_id}' is found."
+            "Incremental scrape will stop at the saved item",
+            extra={"event": "letterboxd_scrape_incremental"},
         )
 
     watchlist_page = make_letterboxd_request(f"{username}/watchlist/", proxy_manager)
     if not watchlist_page:
-        logger.error(f"[{username}] Could not fetch initial watchlist page. Aborting.")
-        return []
+        logger.error(
+            "Initial Letterboxd watchlist page could not be fetched",
+            extra={"event": "letterboxd_scrape_failed", "stage": "letterboxd"},
+        )
+        return WatchlistResult(tmdb_ids=[], failed_items=1)
 
     watchlist_soup: BeautifulSoup | None = BeautifulSoup(
         watchlist_page.content, "html.parser"
     )
     new_tmdb_ids = []
+    failed_items = 0
+    skipped_items = 0
     sync_stopped = False
 
     while watchlist_soup is not None and not sync_stopped:
@@ -117,39 +139,41 @@ def get_new_watchlist_tmdb_ids(
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all movie detail scrapes on the current page to the thread pool
-            future_to_endpoint = {
+            futures = [
                 executor.submit(
+                    copy_context().run,
                     extract_tmdb_id_from_endpoint,
                     str(frame["data-target-link"][1:]),
                     proxy_manager,
-                ): frame
+                )
                 for frame in film_frames
                 if isinstance(frame, bs4.element.Tag)
                 and "data-target-link" in frame.attrs
-            }
-
-            # Create a list of futures in the order they appear on the page
-            ordered_futures = [
-                future
-                for future, frame in future_to_endpoint.items()
-                if frame in film_frames
             ]
+            failed_items += len(film_frames) - len(futures)
 
             # Process results in order to respect the watchlist sequence
-            for future in ordered_futures:
+            for future in futures:
                 try:
-                    tmdb_id = future.result()
+                    detail_result = future.result()
+                    failed_items += detail_result.failed_items
+                    skipped_items += detail_result.skipped_items
+                    tmdb_id = detail_result.tmdb_id
                     if tmdb_id:
                         if tmdb_id == latest_synced_tmdb_id:
                             logger.info(
-                                f"[{username}] Found last synced movie (TMDB ID: {tmdb_id}). Stopping scrape."
+                                "Found saved item; stopping incremental scrape",
+                                extra={"event": "letterboxd_scrape_boundary_found"},
                             )
                             sync_stopped = True
                             break  # Stop processing movies on this page
                         new_tmdb_ids.append(tmdb_id)
-                except Exception as exc:
+                except Exception:
+                    failed_items += 1
                     logger.error(
-                        f"An exception occurred while fetching a TMDB ID: {exc}"
+                        "Unexpected Letterboxd detail failure",
+                        extra={"event": "letterboxd_detail_failed", "stage": "letterboxd"},
+                        exc_info=True,
                     )
 
         if sync_stopped:
@@ -158,15 +182,23 @@ def get_new_watchlist_tmdb_ids(
         next_page_link = watchlist_soup.find("a", {"class": "next"})
         if next_page_link is not None and isinstance(next_page_link, bs4.element.Tag):
             page_idx += 1
-            logger.info(f"[{username}] Getting watchlist page {page_idx}")
+            logger.info(
+                "Fetching another Letterboxd watchlist page",
+                extra={"event": "letterboxd_page_started", "count": page_idx},
+            )
             watchlist_page = make_letterboxd_request(
                 str(next_page_link["href"]), proxy_manager
             )
             if watchlist_page:
                 watchlist_soup = BeautifulSoup(watchlist_page.content, "html.parser")
             else:
+                failed_items += 1
                 watchlist_soup = None
         else:
             watchlist_soup = None
 
-    return new_tmdb_ids
+    return WatchlistResult(
+        tmdb_ids=new_tmdb_ids,
+        failed_items=failed_items,
+        skipped_items=skipped_items,
+    )

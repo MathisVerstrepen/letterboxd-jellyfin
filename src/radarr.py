@@ -4,7 +4,8 @@ import requests
 
 from requests.exceptions import JSONDecodeError
 from src.exceptions import RadarrException
-from src.logger import setup_logger
+from src.logger import get_logger
+from src.results import MutationResult, RadarrLookupResult
 
 
 class RadarrState(TypedDict):
@@ -28,9 +29,12 @@ class RadarrClient:
         self.base_url = url
         self.headers = {"X-Api-Key": api_key}
         self.timeout = timeout
-        self.logger = setup_logger()
+        self.logger = get_logger("radarr")
 
-        self.logger.info(f"RadarrClient initialized with base URL: {self.base_url}")
+        self.logger.info(
+            "Radarr client initialized",
+            extra={"event": "radarr_client_initialized"},
+        )
 
         # Test connection on initialization
         self._test_connection()
@@ -47,7 +51,7 @@ class RadarrClient:
         except requests.exceptions.RequestException as e:
             raise RadarrException(f"Unable to connect to Radarr server: {e}")
 
-    def check_radarr_state(self, tmdb_id: str) -> RadarrState | None:
+    def check_radarr_state(self, tmdb_id: str) -> RadarrLookupResult:
         """
         Check if a file exists for a given TMDB ID in Radarr.
         """
@@ -63,50 +67,62 @@ class RadarrClient:
             content_type = response.headers.get("Content-Type", "")
             if "application/json" not in content_type:
                 self.logger.error(
-                    f"Radarr returned non-JSON response for TMDB ID {tmdb_id}. "
-                    f"Content-Type: '{content_type}'. This often indicates a proxy/auth issue."
+                    "Radarr lookup returned unusable content",
+                    extra={"event": "radarr_lookup_failed", "stage": "radarr"},
                 )
-                self.logger.debug(f"Response text: {response.text[:200]}...")
-                return None
+                return RadarrLookupResult(state=None, failed_items=1)
 
             res = response.json()
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestException:
             self.logger.error(
-                f"Failed to make request to Radarr for TMDB ID {tmdb_id}: {e}"
+                "Radarr lookup request failed",
+                extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return None
+            return RadarrLookupResult(state=None, failed_items=1)
         except JSONDecodeError:
             self.logger.error(
-                f"Failed to decode JSON from Radarr for TMDB ID {tmdb_id}."
+                "Radarr lookup returned invalid JSON",
+                extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return None
+            return RadarrLookupResult(state=None, failed_items=1)
 
-        if not res:
-            self.logger.info(f"No results found in Radarr for TMDB ID: {tmdb_id}")
-            return None
+        if not isinstance(res, list) or not res or not isinstance(res[0], dict):
+            self.logger.warning(
+                "Radarr lookup returned no result",
+                extra={"event": "radarr_lookup_failed", "stage": "radarr"},
+            )
+            return RadarrLookupResult(state=None, failed_items=1)
 
         movie_data = res[0]
-        return {
+        genres = movie_data.get("genres", [])
+        state = {
             "hasFile": movie_data.get("movieFile") is not None,
             "monitored": movie_data.get("monitored", False),
             "name": movie_data.get("title"),
             "tmdbId": movie_data.get("tmdbId"),
             "productionYear": movie_data.get("year"),
-            "is_animation": "Animation" in movie_data.get("genres", []),
+            "is_animation": isinstance(genres, list) and "Animation" in genres,
         }
+        if not state["name"] or state["tmdbId"] is None or state["productionYear"] is None:
+            self.logger.error(
+                "Radarr lookup returned unusable movie data",
+                extra={"event": "radarr_lookup_failed", "stage": "radarr"},
+            )
+            return RadarrLookupResult(state=None, failed_items=1)
+        return RadarrLookupResult(state=state)
 
     def get_movies_state(self, tmdb_ids: set[str]) -> list[RadarrState]:
         """Processes a list of TMDB IDs and returns their Radarr states."""
         states = []
         for tmdb_id in tmdb_ids:
-            state = self.check_radarr_state(tmdb_id)
-            if state:
-                states.append(state)
+            result = self.check_radarr_state(tmdb_id)
+            if result.state:
+                states.append(result.state)
         return states
 
     def add_to_radarr_download_queue(
         self, movies: list[dict], root_path: str, quality_profile_id: int
-    ):
+    ) -> MutationResult:
         bodies = [
             {
                 "tmdbId": movie["tmdbId"],
@@ -122,6 +138,8 @@ class RadarrClient:
 
         url = self.base_url + "/movie"
 
+        succeeded = 0
+        failed_items = 0
         for body in bodies:
             for attempt in range(3):
                 try:
@@ -133,27 +151,31 @@ class RadarrClient:
                             response.status_code == 400
                             and "has already been added" in response.text
                         ):
-                            self.logger.info(
-                                f"Movie {body.get('title')} already exists in Radarr."
-                            )
+                            succeeded += 1
                             break
                         self.logger.error(
-                            f"Failed to add movie {body.get('title')} to Radarr. Status: {response.status_code}, Response: {response.text}"
+                            "Radarr rejected queue request",
+                            extra={"event": "radarr_queue_result", "outcome": "failed", "attempt": attempt + 1, "status_code": response.status_code},
                         )
+                        failed_items += 1
                         break
                     else:
-                        self.logger.info(
-                            f"Added movie {body.get('title')} to Radarr download queue."
-                        )
+                        succeeded += 1
                         break
-                except requests.exceptions.RequestException as e:
+                except requests.exceptions.RequestException:
                     if attempt < 2:
                         wait_time = 2**attempt
                         self.logger.warning(
-                            f"Request to Radarr timed out/failed for '{body.get('title')}'. Retrying in {wait_time}s... Error: {e}"
+                            "Radarr queue request failed; retrying",
+                            extra={"event": "radarr_queue_retry", "attempt": attempt + 1},
                         )
                         time.sleep(wait_time)
                     else:
                         self.logger.error(
-                            f"Failed to add movie {body.get('title')} to Radarr after 3 attempts: {e}"
+                            "Radarr queue request exhausted retries",
+                            extra={"event": "radarr_queue_result", "outcome": "failed", "attempt": attempt + 1},
                         )
+                        failed_items += 1
+        return MutationResult(
+            attempted=len(bodies), succeeded=succeeded, failed_items=failed_items
+        )

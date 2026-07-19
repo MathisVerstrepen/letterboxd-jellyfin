@@ -1,4 +1,3 @@
-import logging
 import random
 import time
 import threading
@@ -8,8 +7,9 @@ import socket
 from urllib.parse import urlparse
 
 from src.exceptions import RequestException
+from src.logger import get_logger
 
-logger = logging.getLogger("letterboxd-sync")
+logger = get_logger("proxy")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -72,21 +72,33 @@ class ProxyManager:
         proxy_file = config.get("proxy_file")
         if proxy_file:
             proxy_type = config.get("proxy_type", "socks5")
-            logger.info(f"Loading proxies from file: {proxy_file}")
+            logger.info(
+                "Loading proxies from configured file",
+                extra={"event": "proxy_load_started"},
+            )
             self._load_from_file(proxy_file, proxy_type)
         elif config.get("proxies"):
-            logger.info("Loading proxies from config list.")
+            logger.info("Loading configured proxies", extra={"event": "proxy_load_started"})
             self._load_from_list(config["proxies"])
 
         if self.proxies:
-            logger.info(f"Successfully loaded {len(self.proxies)} proxies.")
+            logger.info(
+                "Proxies loaded",
+                extra={"event": "proxy_load_completed", "count": len(self.proxies)},
+            )
             # Test proxy connectivity and filter out unreachable ones if enabled
             if self.validate_on_startup:
                 self._validate_proxies()
             else:
-                logger.info("Proxy validation is disabled. Using all loaded proxies.")
+                logger.info(
+                    "Proxy validation is disabled",
+                    extra={"event": "proxy_validation_skipped", "count": len(self.proxies)},
+                )
         else:
-            logger.info("No proxy configuration found. Requests will be made directly.")
+            logger.info(
+                "No proxies configured; direct requests will be used",
+                extra={"event": "proxy_load_completed", "count": 0},
+            )
 
     def _load_from_file(self, file_path: str, proxy_type: str):
         """Loads proxies from a text file (IP:PORT:USER:PASS)."""
@@ -99,18 +111,23 @@ class ProxyManager:
 
                     parts = line.split(":")
                     if len(parts) != 4:
-                        logger.warning(f"Skipping malformed proxy line: {line}")
+                        logger.warning(
+                            "Skipping malformed proxy entry",
+                            extra={"event": "proxy_entry_invalid"},
+                        )
                         continue
 
                     ip, port, user, password = parts
                     proxy_url = f"{proxy_type}://{user}:{password}@{ip}:{port}"
                     self.proxies.append({"http": proxy_url, "https": proxy_url})
         except FileNotFoundError:
+            logger.error("Proxy file was not found", extra={"event": "proxy_load_failed"})
+        except Exception:
             logger.error(
-                f"Proxy file not found at '{file_path}'. Please check the path in your config.yaml."
+                "Proxy file could not be read",
+                extra={"event": "proxy_load_failed"},
+                exc_info=True,
             )
-        except Exception as e:
-            logger.error(f"Failed to read or parse proxy file: {e}")
 
     def _load_from_list(self, proxy_list: list[str]):
         """Loads proxies from a list of full proxy URLs."""
@@ -143,8 +160,11 @@ class ProxyManager:
             sock.close()
             
             return result == 0
-        except Exception as e:
-            logger.debug(f"Proxy connectivity test failed for {proxy_dict}: {e}")
+        except Exception:
+            logger.debug(
+                "Proxy connectivity test failed",
+                extra={"event": "proxy_connectivity_failed"},
+            )
             return False
 
     def _validate_proxies(self):
@@ -154,26 +174,37 @@ class ProxyManager:
         if not self.proxies:
             return
             
-        logger.info("Testing proxy connectivity...")
+        logger.info("Testing proxy connectivity", extra={"event": "proxy_validation_started", "count": len(self.proxies)})
         working_proxies = []
         
         for proxy in self.proxies:
             if self._test_proxy_connectivity(proxy):
                 working_proxies.append(proxy)
             else:
-                proxy_url = proxy.get("https", proxy.get("http", "unknown"))
-                logger.warning(f"Proxy {proxy_url} is not reachable, removing from list")
+                logger.warning(
+                    "Unreachable proxy removed",
+                    extra={"event": "proxy_connectivity_failed"},
+                )
         
         original_count = len(self.proxies)
         self.proxies = working_proxies
         working_count = len(self.proxies)
         
         if working_count == 0:
-            logger.error("No working proxies found! Requests will be made without proxies.")
+            logger.error(
+                "No reachable proxies remain; direct requests will be used",
+                extra={"event": "proxy_validation_completed", "count": 0},
+            )
         elif working_count < original_count:
-            logger.warning(f"Only {working_count}/{original_count} proxies are working.")
+            logger.warning(
+                "Some configured proxies are unreachable",
+                extra={"event": "proxy_validation_completed", "count": working_count},
+            )
         else:
-            logger.info(f"All {working_count} proxies are working.")
+            logger.info(
+                "All configured proxies are reachable",
+                extra={"event": "proxy_validation_completed", "count": working_count},
+            )
 
     def get_proxy(self) -> dict[str, str] | None:
         """
@@ -245,24 +276,37 @@ def make_request(
             response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
             return response
         except requests.exceptions.RequestException as e:
-            proxy_url = proxy.get("https", proxy.get("http", "unknown"))
-            logger.warning(f"Request via proxy {proxy_url} failed: {e}")
+            logger.warning(
+                "Request through proxy failed",
+                extra={"event": "proxy_request_failed"},
+            )
             
             # If fallback is allowed, try direct connection
             if allow_fallback:
-                logger.info(f"Attempting direct connection to {url}")
+                logger.info(
+                    "Attempting direct request fallback",
+                    extra={"event": "proxy_fallback_started"},
+                )
                 try:
                     response = session.get(
                         url, timeout=20, proxies=None, headers=headers, allow_redirects=True
                     )
                     response.raise_for_status()
-                    logger.info(f"Direct connection to {url} successful")
+                    logger.info(
+                        "Direct request fallback succeeded",
+                        extra={"event": "proxy_fallback_completed", "outcome": "success"},
+                    )
                     return response
                 except requests.exceptions.RequestException as fallback_e:
-                    logger.error(f"Direct connection also failed: {fallback_e}")
-                    raise RequestException(f"Unable to make request to {url} via proxy or direct connection: {e}") from e
+                    logger.error(
+                        "Direct request fallback failed",
+                        extra={"event": "proxy_fallback_completed", "outcome": "failed"},
+                    )
+                    raise RequestException(
+                        "Letterboxd request failed through proxy and direct connection"
+                    ) from fallback_e
             else:
-                raise RequestException(f"Unable to make request to {url}: {e}") from e
+                raise RequestException("Letterboxd request through proxy failed") from e
     else:
         # No proxy provided, make direct request
         try:
@@ -272,4 +316,4 @@ def make_request(
             response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
             return response
         except requests.exceptions.RequestException as e:
-            raise RequestException(f"Unable to make request to {url}: {e}") from e
+            raise RequestException("Direct Letterboxd request failed") from e

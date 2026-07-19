@@ -8,6 +8,11 @@ class RequestException(Exception):
         self.message = message
         super().__init__(self.message)
 
+
+class ConfigurationError(Exception):
+    """Raised when runtime configuration is missing or invalid."""
+
+
 class RadarrException(Exception):
     """
     Exception raised when a request to the Radarr fails
@@ -16,7 +21,8 @@ class RadarrException(Exception):
     def __init__(self, message):
         self.message = message
         super().__init__(self.message)
-        
+
+
 class JellyfinException(Exception):
     """
     Exception raised when a request to the Radarr fails

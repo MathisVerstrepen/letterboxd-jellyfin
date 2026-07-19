@@ -1,7 +1,8 @@
 import sys
 from pathlib import Path
 import requests
-from src.logger import setup_logger
+from src.logger import get_logger
+from src.results import MutationResult, PlayedMoviesResult
 
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
@@ -18,7 +19,7 @@ class Jellyfin:
             "Authorization": f'MediaBrowser Token="{api_key}"',
         }
         self._movie_cache: dict[tuple[str, int], str] | None = None
-        self.logger = setup_logger()
+        self.logger = get_logger("jellyfin")
 
         # Test connection on initialization
         self._test_connection()
@@ -69,7 +70,7 @@ class Jellyfin:
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                f"Jellyfin movie lookup failed with HTTP {response.status_code}"
             )
 
         res = response.json()
@@ -97,7 +98,7 @@ class Jellyfin:
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                f"Jellyfin series lookup failed with HTTP {response.status_code}"
             )
 
         res = response.json()
@@ -118,7 +119,7 @@ class Jellyfin:
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                f"Jellyfin series detail lookup failed with HTTP {response.status_code}"
             )
 
         return response.json()
@@ -148,24 +149,28 @@ class Jellyfin:
             )
             if response.status_code != 204:
                 raise JellyfinException(
-                    f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                    f"Jellyfin collection request failed with HTTP {response.status_code}"
                 )
 
             total_added += len(batch)
             self.logger.debug(
-                f"Added batch of {len(batch)} movies to collection {collection_id} for user {username}"
+                "Added Jellyfin user collection batch",
+                extra={"event": "jellyfin_user_collection_add_batch", "count": len(batch)},
             )
 
         self.logger.info(
-            f"Successfully added {total_added} movies to collection for user {username}"
+            "Jellyfin user collection addition completed",
+            extra={"event": "jellyfin_user_collection_add_completed", "count": total_added},
         )
 
-    def add_to_collection(self, movie_ids: list[str], collection_id: str) -> None:
+    def add_to_collection(
+        self, movie_ids: list[str], collection_id: str
+    ) -> MutationResult:
         """
         Add movies to a collection, batching requests to avoid URL length limits
         """
         if not movie_ids:
-            return
+            return MutationResult()
 
         # Batch size to avoid URL length limits (HTTP 414 error)
         batch_size = 50
@@ -176,30 +181,51 @@ class Jellyfin:
             batch = movie_ids[i : i + batch_size]
             params = {"ids": ",".join(batch)}
 
-            response = requests.post(
-                url, headers=self.headers, params=params, timeout=20
-            )
+            try:
+                response = requests.post(
+                    url, headers=self.headers, params=params, timeout=20
+                )
+            except requests.exceptions.RequestException:
+                self.logger.error(
+                    "Jellyfin collection add request failed",
+                    extra={"event": "jellyfin_collection_add_result", "outcome": "failed", "failed_items": len(batch)},
+                )
+                return MutationResult(
+                    attempted=len(movie_ids),
+                    succeeded=total_added,
+                    failed_items=len(batch),
+                    fatal=True,
+                )
 
             if response.status_code != 204:
                 self.logger.error(
-                    f"Failed to add movies batch to collection. Status: {response.status_code}, Response: {response.text}"
+                    "Jellyfin rejected collection add request",
+                    extra={"event": "jellyfin_collection_add_result", "outcome": "failed", "failed_items": len(batch), "status_code": response.status_code},
                 )
-                raise JellyfinException(
-                    f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                return MutationResult(
+                    attempted=len(movie_ids),
+                    succeeded=total_added,
+                    failed_items=len(batch),
+                    fatal=True,
                 )
 
             total_added += len(batch)
             self.logger.debug(
-                f"Added batch of {len(batch)} movies to collection {collection_id}"
+                "Added Jellyfin collection batch",
+                extra={"event": "jellyfin_collection_add_batch", "count": len(batch)},
             )
 
         self.logger.info(
-            f"Successfully added {total_added} movies to collection {collection_id}"
+            "Jellyfin collection addition completed",
+            extra={"event": "jellyfin_collection_add_result", "outcome": "success", "count": total_added},
+        )
+        return MutationResult(
+            attempted=len(movie_ids), succeeded=total_added
         )
 
     def get_played_movies_from_collection(
         self, collection_id: str, user_id: str
-    ) -> list[str]:
+    ) -> PlayedMoviesResult:
         """Gets a list of movie IDs from a collection that a specific user has played."""
         url = f"{self.base_url}/Users/{user_id}/Items"
         params = {
@@ -208,15 +234,42 @@ class Jellyfin:
             "IncludeItemTypes": "Movie",
             "Filters": "IsPlayed",
         }
-        response = requests.get(url, params=params, headers=self.headers, timeout=20)
+        try:
+            response = requests.get(url, params=params, headers=self.headers, timeout=20)
+        except requests.exceptions.RequestException:
+            self.logger.error(
+                "Jellyfin played-movie lookup request failed",
+                extra={"event": "jellyfin_played_lookup_failed", "stage": "jellyfin"},
+            )
+            return PlayedMoviesResult(movie_ids=[], failed_items=1, fatal=True)
 
         played_movie_ids = []
         if response.status_code == 200:
-            data = response.json()
+            try:
+                data = response.json()
+            except requests.exceptions.JSONDecodeError:
+                self.logger.error(
+                    "Jellyfin played-movie lookup returned invalid JSON",
+                    extra={"event": "jellyfin_played_lookup_failed", "stage": "jellyfin"},
+                )
+                return PlayedMoviesResult(movie_ids=[], failed_items=1, fatal=True)
+            if not isinstance(data, dict) or not isinstance(data.get("Items", []), list):
+                self.logger.error(
+                    "Jellyfin played-movie lookup returned unusable data",
+                    extra={"event": "jellyfin_played_lookup_failed", "stage": "jellyfin"},
+                )
+                return PlayedMoviesResult(movie_ids=[], failed_items=1, fatal=True)
             for item in data.get("Items", []):
-                played_movie_ids.append(item.get("Id"))
+                if isinstance(item, dict) and item.get("Id"):
+                    played_movie_ids.append(item["Id"])
+        else:
+            self.logger.error(
+                "Jellyfin played-movie lookup failed",
+                extra={"event": "jellyfin_played_lookup_failed", "stage": "jellyfin", "status_code": response.status_code},
+            )
+            return PlayedMoviesResult(movie_ids=[], failed_items=1, fatal=False)
 
-        return played_movie_ids
+        return PlayedMoviesResult(movie_ids=played_movie_ids)
 
     def get_collection_movies(self, username: str, collection_id: str) -> set[str]:
         """
@@ -235,28 +288,50 @@ class Jellyfin:
         response = requests.get(url, params=params, headers=self.headers, timeout=20)
         if response.status_code != 200:
             raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                f"Jellyfin collection lookup failed with HTTP {response.status_code}"
             )
 
         res = response.json()
 
         return set(map(lambda x: x["Id"], res["Items"]))
 
-    def remove_from_collection(self, movie_ids: list[str], collection_id: str) -> None:
+    def remove_from_collection(
+        self, movie_ids: list[str], collection_id: str
+    ) -> MutationResult:
         """Remove movies from a collection by their Jellyfin IDs."""
         if not movie_ids:
-            return
+            return MutationResult()
 
         if collection_id is None:
             raise JellyfinException("Cannot remove from a null collection ID")
 
         url = self.base_url + "/Collections/" + collection_id + "/Items"
         params = {"ids": ",".join(movie_ids)}
-        response = requests.delete(url, headers=self.headers, params=params, timeout=20)
-        if response.status_code != 204:
-            raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+        try:
+            response = requests.delete(
+                url, headers=self.headers, params=params, timeout=20
             )
+        except requests.exceptions.RequestException:
+            self.logger.error(
+                "Jellyfin collection removal request failed",
+                extra={"event": "jellyfin_collection_remove_result", "outcome": "failed", "failed_items": len(movie_ids)},
+            )
+            return MutationResult(
+                attempted=len(movie_ids), failed_items=len(movie_ids), fatal=True
+            )
+        if response.status_code != 204:
+            self.logger.error(
+                "Jellyfin rejected collection removal request",
+                extra={"event": "jellyfin_collection_remove_result", "outcome": "failed", "failed_items": len(movie_ids), "status_code": response.status_code},
+            )
+            return MutationResult(
+                attempted=len(movie_ids), failed_items=len(movie_ids), fatal=True
+            )
+        self.logger.info(
+            "Jellyfin collection removal completed",
+            extra={"event": "jellyfin_collection_remove_result", "outcome": "success", "count": len(movie_ids)},
+        )
+        return MutationResult(attempted=len(movie_ids), succeeded=len(movie_ids))
 
     def get_user_id(self, username: str) -> str | None:
         """
@@ -267,7 +342,7 @@ class Jellyfin:
         response = requests.get(url, headers=self.headers, timeout=20)
         if response.status_code != 200:
             raise JellyfinException(
-                f"Unable to make request to {url}. Status code: {response.status_code}, Response: {response.text}"
+                f"Jellyfin user lookup failed with HTTP {response.status_code}"
             )
 
         res = response.json()

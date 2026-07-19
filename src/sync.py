@@ -16,7 +16,7 @@ from src.results import (
     empty_failures,
     empty_queue_counts,
 )
-from src.state_manager import MovieStateChange, StateCheckpoint
+from src.state_manager import MovieStateChange, SeriesStateChange, StateCheckpoint
 
 
 def _movie_record(
@@ -31,6 +31,18 @@ def _movie_record(
         "status": status,
         "title": title,
         "year": year,
+        "completion_reason": completion_reason,
+    }
+
+
+def _series_record(
+    status: str,
+    tmdb_id: str | None = None,
+    completion_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "tmdb_id": tmdb_id,
+        "status": status,
         "completion_reason": completion_reason,
     }
 
@@ -50,6 +62,9 @@ class SyncManager:
         completed_endpoint_lookup: Callable[
             [tuple[str, ...]], CompletedEndpointsResult
         ],
+        sonarr: Any = None,
+        sonarr_config: dict[str, Any] | None = None,
+        sonarr_enabled: bool = False,
     ) -> None:
         self.letterboxd_username = user_config["letterboxd_username"]
         self.jellyfin_collection_id = user_config.get("jellyfin_collection_id")
@@ -62,6 +77,11 @@ class SyncManager:
         self.max_workers = letterboxd_config.get("max_concurrent_requests", 5)
         self.proxy_manager = proxy_manager
         self.completed_endpoint_lookup = completed_endpoint_lookup
+        self.sonarr = sonarr
+        self.sonarr_config = sonarr_config or {}
+        self.sonarr_enabled = sonarr_enabled
+        self.user_state.setdefault("series", {})
+        self.user_state.setdefault("series_backfill_complete", False)
         self.logger = get_logger("sync")
 
     def _checkpoint(
@@ -81,10 +101,18 @@ class SyncManager:
         return None
 
     def _merge_discovery(
-        self, watchlist, completed_endpoints: frozenset[str]
+        self,
+        watchlist,
+        completed_endpoints: frozenset[str],
+        *,
+        series_only: bool = False,
+        update_cursor: bool = True,
+        complete_backfill: bool = False,
     ) -> StateCheckpoint | None:
         movie_changes = []
+        series_changes = []
         movies = self.user_state["movies"]
+        series_state = self.user_state["series"]
         cursor = self.user_state["cursor"]
 
         if cursor and cursor["kind"] == "legacy_tmdb" and watchlist.boundary_uri:
@@ -99,37 +127,59 @@ class SyncManager:
             if entry.endpoint in completed_endpoints:
                 continue
             existing = movies.get(entry.endpoint)
-            if existing is None:
-                if entry.detail.outcome == "movie":
+            existing_series = series_state.get(entry.endpoint)
+            if entry.detail.outcome == "retry":
+                if existing is not None or existing_series is not None:
+                    continue
+                target = series_state if series_only else movies
+                changes = series_changes if series_only else movie_changes
+                target[entry.endpoint] = (
+                    _series_record("retry_letterboxd")
+                    if series_only
+                    else _movie_record("retry_letterboxd")
+                )
+                change_type = SeriesStateChange if series_only else MovieStateChange
+                changes.append(change_type("upsert", entry.endpoint, target[entry.endpoint]))
+                continue
+            if entry.detail.media_type == "series":
+                if existing and existing["status"] == "retry_letterboxd":
+                    del movies[entry.endpoint]
+                    movie_changes.append(MovieStateChange("delete", entry.endpoint))
+                if not self.sonarr_enabled:
+                    continue
+                if existing_series is None or existing_series["status"] == "retry_letterboxd":
+                    series_state[entry.endpoint] = _series_record(
+                        "pending_sonarr", entry.detail.tmdb_id
+                    )
+                    series_changes.append(
+                        SeriesStateChange(
+                            "upsert", entry.endpoint, series_state[entry.endpoint]
+                        )
+                    )
+                continue
+            if entry.detail.media_type == "movie":
+                if existing_series and existing_series["status"] == "retry_letterboxd":
+                    del series_state[entry.endpoint]
+                    series_changes.append(SeriesStateChange("delete", entry.endpoint))
+                if series_only:
+                    continue
+                if existing is None:
                     movies[entry.endpoint] = _movie_record(
                         "pending_radarr", tmdb_id=entry.detail.tmdb_id
                     )
-                elif entry.detail.outcome == "retry":
-                    movies[entry.endpoint] = _movie_record("retry_letterboxd")
-                else:
-                    continue
-                movie_changes.append(
-                    MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
-                )
-            elif (
-                existing["status"] == "retry_letterboxd"
-                and entry.detail.outcome == "movie"
-            ):
-                movies[entry.endpoint] = _movie_record(
-                    "pending_radarr", tmdb_id=entry.detail.tmdb_id
-                )
-                movie_changes.append(
-                    MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
-                )
-            elif (
-                existing["status"] == "retry_letterboxd"
-                and entry.detail.outcome == "not_movie"
-            ):
-                del movies[entry.endpoint]
-                movie_changes.append(MovieStateChange("delete", entry.endpoint))
+                    movie_changes.append(
+                        MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
+                    )
+                elif existing["status"] == "retry_letterboxd":
+                    movies[entry.endpoint] = _movie_record(
+                        "pending_radarr", tmdb_id=entry.detail.tmdb_id
+                    )
+                    movie_changes.append(
+                        MovieStateChange("upsert", entry.endpoint, movies[entry.endpoint])
+                    )
 
         cursor_changed = False
-        if watchlist.scan_complete:
+        if update_cursor and watchlist.scan_complete:
             new_cursor = (
                 {"kind": "letterboxd", "value": watchlist.cursor_uri}
                 if watchlist.cursor_uri
@@ -138,12 +188,20 @@ class SyncManager:
             if cursor != new_cursor:
                 self.user_state["cursor"] = new_cursor
                 cursor_changed = True
-        if not cursor_changed and not movie_changes:
+        marker_changed = complete_backfill and watchlist.scan_complete and not self.user_state[
+            "series_backfill_complete"
+        ]
+        if marker_changed:
+            self.user_state["series_backfill_complete"] = True
+        if not cursor_changed and not movie_changes and not series_changes and not marker_changed:
             return None
         return StateCheckpoint(
             cursor_changed=cursor_changed,
             cursor=self.user_state["cursor"] if cursor_changed else None,
             movie_changes=tuple(movie_changes),
+            series_changes=tuple(series_changes),
+            series_backfill_changed=marker_changed,
+            series_backfill_complete=marker_changed,
         )
 
     def _retry_letterboxd(
@@ -156,9 +214,26 @@ class SyncManager:
         if detail.outcome == "retry":
             failures["letterboxd"] += 1
             return None
-        if detail.outcome == "not_movie":
+        if detail.media_type == "series":
             del self.user_state["movies"][endpoint]
-            change = MovieStateChange("delete", endpoint)
+            movie_change = MovieStateChange("delete", endpoint)
+            series_changes = ()
+            if self.sonarr_enabled:
+                self.user_state["series"][endpoint] = _series_record(
+                    "pending_sonarr", detail.tmdb_id
+                )
+                series_changes = (
+                    SeriesStateChange(
+                        "upsert", endpoint, self.user_state["series"][endpoint]
+                    ),
+                )
+            return self._checkpoint(
+                StateCheckpoint(
+                    movie_changes=(movie_change,), series_changes=series_changes
+                ),
+                failures,
+                queue_counts,
+            )
         else:
             self.user_state["movies"][endpoint] = _movie_record(
                 "pending_radarr", tmdb_id=detail.tmdb_id
@@ -167,6 +242,69 @@ class SyncManager:
                 "upsert", endpoint, self.user_state["movies"][endpoint]
             )
         return self._checkpoint(StateCheckpoint(movie_changes=(change,)), failures, queue_counts)
+
+    def _retry_series_letterboxd(
+        self,
+        endpoint: str,
+        failures: dict[str, int],
+        queue_counts: dict[str, int],
+    ) -> SyncResult | None:
+        detail = extract_tmdb_id_from_endpoint(endpoint, self.proxy_manager)
+        if detail.outcome == "retry":
+            failures["letterboxd"] += 1
+            return None
+        if detail.media_type == "movie":
+            del self.user_state["series"][endpoint]
+            change = SeriesStateChange("delete", endpoint)
+        else:
+            self.user_state["series"][endpoint] = _series_record(
+                "pending_sonarr", detail.tmdb_id
+            )
+            change = SeriesStateChange(
+                "upsert", endpoint, self.user_state["series"][endpoint]
+            )
+        return self._checkpoint(
+            StateCheckpoint(series_changes=(change,)), failures, queue_counts
+        )
+
+    def _process_sonarr(
+        self,
+        endpoint: str,
+        failures: dict[str, int],
+        queue_counts: dict[str, int],
+    ) -> SyncResult | None:
+        if self.sonarr is None:
+            return None
+        item = self.user_state["series"][endpoint]
+        lookup = self.sonarr.check_sonarr_state(item["tmdb_id"])
+        failures["sonarr"] += lookup.failed_items
+        succeeded = lookup.installed
+        if lookup.resource is not None and not lookup.installed:
+            result = self.sonarr.add_to_sonarr_download_queue(
+                lookup.resource,
+                self.sonarr_config["root_folder_path"],
+                self.sonarr_config["quality_profile_id"],
+            )
+            queue_counts["sonarr_add"] += result.attempted
+            failures["sonarr"] += result.failed_items
+            succeeded = result.succeeded == 1 and not result.failed_items
+        if succeeded:
+            self.user_state["series"][endpoint] = _series_record(
+                "completed", item["tmdb_id"], "sonarr_processed"
+            )
+        elif item["status"] != "retry_sonarr":
+            item["status"] = "retry_sonarr"
+        else:
+            return None
+        return self._checkpoint(
+            StateCheckpoint(
+                series_changes=(
+                    SeriesStateChange("upsert", endpoint, self.user_state["series"][endpoint]),
+                )
+            ),
+            failures,
+            queue_counts,
+        )
 
     def _process_radarr(
         self,
@@ -336,13 +474,89 @@ class SyncManager:
             return SyncResult(failures_by_stage=failures, queue_counts=queue_counts)
 
         try:
-            watchlist = get_new_watchlist_entries(
-                self.letterboxd_username,
-                self.proxy_manager,
-                self.max_workers,
-                self.user_state["cursor"],
-            )
-            failures["letterboxd"] += watchlist.failed_items
+            original_cursor = self.user_state["cursor"]
+            discovery_passes = []
+            if self.sonarr_enabled and not self.user_state["series_backfill_complete"]:
+                if original_cursor is None:
+                    discovery_passes.append(
+                        (
+                            get_new_watchlist_entries(
+                                self.letterboxd_username,
+                                self.proxy_manager,
+                                self.max_workers,
+                                None,
+                                include_series=True,
+                                include_movies=True,
+                            ),
+                            False,
+                            True,
+                            True,
+                        )
+                    )
+                else:
+                    discovery_passes.append(
+                        (
+                            get_new_watchlist_entries(
+                                self.letterboxd_username,
+                                self.proxy_manager,
+                                self.max_workers,
+                                None,
+                                include_series=True,
+                                include_movies=False,
+                            ),
+                            True,
+                            False,
+                            True,
+                        )
+                    )
+                    discovery_passes.append(
+                        (
+                            get_new_watchlist_entries(
+                                self.letterboxd_username,
+                                self.proxy_manager,
+                                self.max_workers,
+                                original_cursor,
+                                include_series=True,
+                                include_movies=True,
+                            ),
+                            False,
+                            True,
+                            False,
+                        )
+                    )
+            elif self.sonarr_enabled:
+                discovery_passes.append(
+                    (
+                        get_new_watchlist_entries(
+                            self.letterboxd_username,
+                            self.proxy_manager,
+                            self.max_workers,
+                            original_cursor,
+                            include_series=True,
+                            include_movies=True,
+                        ),
+                        False,
+                        True,
+                        False,
+                    )
+                )
+            else:
+                discovery_passes.append(
+                    (
+                        get_new_watchlist_entries(
+                            self.letterboxd_username,
+                            self.proxy_manager,
+                            self.max_workers,
+                            original_cursor,
+                        ),
+                        False,
+                        True,
+                        False,
+                    )
+                )
+
+            watchlist = discovery_passes[-1][0]
+            failures["letterboxd"] += sum(item[0].failed_items for item in discovery_passes)
             if watchlist.outcome == "success" and not watchlist.entries:
                 message = "No new Letterboxd movies found"
             elif watchlist.outcome == "failed":
@@ -359,40 +573,49 @@ class SyncManager:
                     "outcome": watchlist.outcome,
                 },
             )
-            completed_endpoints = frozenset()
-            if watchlist.entries:
-                pending_endpoints = self.user_state["movies"]
-                candidates = tuple(
-                    dict.fromkeys(
-                        entry.endpoint
-                        for entry in watchlist.entries
-                        if entry.endpoint not in pending_endpoints
-                    )
-                )
-                if candidates:
-                    completed_lookup = self.completed_endpoint_lookup(candidates)
-                    failures["state"] += completed_lookup.failed_items
-                    if completed_lookup.failed_items:
-                        return SyncResult(
-                            completed=False,
-                            failures_by_stage=failures,
-                            queue_counts=queue_counts,
+            for discovered, series_only, update_cursor, complete_backfill in discovery_passes:
+                completed_endpoints = frozenset()
+                if discovered.entries:
+                    pending_endpoints = {
+                        *self.user_state["movies"],
+                        *self.user_state["series"],
+                    }
+                    candidates = tuple(
+                        dict.fromkeys(
+                            entry.endpoint
+                            for entry in discovered.entries
+                            if entry.endpoint not in pending_endpoints
                         )
-                    completed_endpoints = completed_lookup.endpoints
-            discovery_checkpoint = self._merge_discovery(
-                watchlist, completed_endpoints
-            )
-            if discovery_checkpoint:
-                stopped = self._checkpoint(
-                    discovery_checkpoint, failures, queue_counts
+                    )
+                    if candidates:
+                        completed_lookup = self.completed_endpoint_lookup(candidates)
+                        failures["state"] += completed_lookup.failed_items
+                        if completed_lookup.failed_items:
+                            return SyncResult(
+                                completed=False,
+                                failures_by_stage=failures,
+                                queue_counts=queue_counts,
+                            )
+                        completed_endpoints = completed_lookup.endpoints
+                discovery_checkpoint = self._merge_discovery(
+                    discovered,
+                    completed_endpoints,
+                    series_only=series_only,
+                    update_cursor=update_cursor,
+                    complete_backfill=complete_backfill,
                 )
-                if stopped:
-                    return stopped
+                if discovery_checkpoint:
+                    stopped = self._checkpoint(
+                        discovery_checkpoint, failures, queue_counts
+                    )
+                    if stopped:
+                        return stopped
 
             endpoints = list(self.user_state["movies"])
             scrape_retry_endpoints = {
                 entry.endpoint
-                for entry in watchlist.entries
+                for item in discovery_passes
+                for entry in item[0].entries
                 if entry.detail.outcome == "retry"
             }
             cursor = self.user_state["cursor"]
@@ -431,6 +654,26 @@ class SyncManager:
                     stopped = self._process_jellyfin(endpoint, failures, queue_counts)
                     if stopped:
                         return stopped
+
+            if self.sonarr_enabled:
+                for endpoint in list(self.user_state["series"]):
+                    item = self.user_state["series"].get(endpoint)
+                    if item is None or item["status"] == "completed":
+                        continue
+                    if item["status"] == "retry_letterboxd":
+                        if endpoint not in scrape_retry_endpoints:
+                            stopped = self._retry_series_letterboxd(
+                                endpoint, failures, queue_counts
+                            )
+                            if stopped:
+                                return stopped
+                            item = self.user_state["series"].get(endpoint)
+                        if item is None or item["status"] == "retry_letterboxd":
+                            continue
+                    if item["status"] in {"pending_sonarr", "retry_sonarr"}:
+                        stopped = self._process_sonarr(endpoint, failures, queue_counts)
+                        if stopped:
+                            return stopped
 
             if radarr_queue_totals["attempted"]:
                 if not radarr_queue_totals["failed_items"]:

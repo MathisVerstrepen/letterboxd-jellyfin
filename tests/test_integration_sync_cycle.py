@@ -13,6 +13,7 @@ from src.results import (
     MutationResult,
     PlayedMoviesResult,
     RadarrLookupResult,
+    SonarrLookupResult,
     StateSaveResult,
     WatchlistEntry,
     WatchlistResult,
@@ -34,6 +35,17 @@ def config_for(*users):
         },
         "users": list(users),
     }
+
+
+def config_with_sonarr(*users):
+    config = config_for(*users)
+    config["sonarr"] = {
+        "url": "http://sonarr.invalid",
+        "api_key": "fake-sonarr",
+        "root_folder_path": "/series",
+        "quality_profile_id": 8,
+    }
+    return config
 
 
 def user(username="alice"):
@@ -130,7 +142,9 @@ def test_json_migration_and_completed_state_persist(tmp_path, monkeypatch, legac
     original = json.dumps(legacy)
     source.write_text(original, encoding="utf-8")
     jellyfin, radarr, _, _ = external_fakes(monkeypatch)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     monkeypatch.setattr(
         sync,
         "get_new_watchlist_entries",
@@ -164,7 +178,9 @@ def test_json_migration_and_completed_state_persist(tmp_path, monkeypatch, legac
 def test_radarr_failure_retries_after_connection_reopen(tmp_path, monkeypatch):
     database, source = use_state_paths(tmp_path, monkeypatch)
     _, radarr, _, _ = external_fakes(monkeypatch)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     monkeypatch.setattr(
         sync,
         "get_new_watchlist_entries",
@@ -186,7 +202,9 @@ def test_radarr_failure_retries_after_connection_reopen(tmp_path, monkeypatch):
 def test_jellyfin_failure_retries_without_repeating_radarr(tmp_path, monkeypatch):
     database, source = use_state_paths(tmp_path, monkeypatch)
     jellyfin, radarr, _, _ = external_fakes(monkeypatch)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     monkeypatch.setattr(
         sync,
         "get_new_watchlist_entries",
@@ -225,7 +243,9 @@ def test_partial_pagination_processes_entry_without_cursor_advance(tmp_path, mon
         encoding="utf-8",
     )
     external_fakes(monkeypatch)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     monkeypatch.setattr(
         sync,
         "get_new_watchlist_entries",
@@ -283,7 +303,9 @@ def test_checkpoint_failure_stops_later_users_and_preserves_last_commit(
 ):
     database, source = use_state_paths(tmp_path, monkeypatch)
     _, radarr, _, _ = external_fakes(monkeypatch)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     scrape_mock = Mock(return_value=scrape([entry]))
     monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape_mock)
     monkeypatch.setattr(
@@ -299,7 +321,12 @@ def test_checkpoint_failure_stops_later_users_and_preserves_last_commit(
     )
 
     assert outcome == "failed"
-    assert load_user(database, source, "alice") == {"cursor": None, "movies": {}}
+    assert load_user(database, source, "alice") == {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
     assert scrape_mock.call_count == 1
     radarr.check_radarr_state.assert_not_called()
 
@@ -370,7 +397,9 @@ def test_multi_user_cycle_shares_proxy_and_radarr_lookup_cache(
     proxy = Mock()
     proxy_constructor = Mock(return_value=proxy)
     monkeypatch.setattr(main, "ProxyManager", proxy_constructor)
-    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
     scrape_mock = Mock(return_value=scrape([entry]))
     monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape_mock)
 
@@ -385,3 +414,51 @@ def test_multi_user_cycle_shares_proxy_and_radarr_lookup_cache(
     assert all(call.args[1] is proxy for call in scrape_mock.call_args_list)
     assert get.call_count == 2
     assert radarr.add_to_radarr_download_queue.call_count == 2
+
+
+@pytest.mark.integration
+def test_sonarr_backfill_persists_across_reopen(tmp_path, monkeypatch):
+    database, source = use_state_paths(tmp_path, monkeypatch)
+    external_fakes(monkeypatch)
+    sonarr = Mock()
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(
+        state={"tmdbId": 202}
+    )
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    constructor = Mock(return_value=sonarr)
+    monkeypatch.setattr(main, "SonarrClient", constructor)
+    entry = WatchlistEntry(
+        "show/new/", LetterboxdDetailResult("resolved", "series", "202")
+    )
+    scrape_mock = Mock(side_effect=[scrape([entry]), scrape([], cursor="show/new/")])
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape_mock)
+    observability = ObservabilityService("127.0.0.1", 0)
+
+    assert main.run_sync_cycle(config_with_sonarr(user()), observability, 1) == "success"
+    persisted = load_user(database, source)
+    assert persisted["series"] == {}
+    assert persisted["series_backfill_complete"] is True
+    assert main.run_sync_cycle(config_with_sonarr(user()), observability, 2) == "success"
+    assert sonarr.add_to_sonarr_download_queue.call_count == 1
+    assert constructor.call_count == 2
+
+
+@pytest.mark.integration
+def test_sonarr_initialization_failure_does_not_block_movie_work(tmp_path, monkeypatch):
+    use_state_paths(tmp_path, monkeypatch)
+    jellyfin, radarr, _, _ = external_fakes(monkeypatch)
+    monkeypatch.setattr(main, "SonarrClient", Mock(side_effect=RuntimeError("down")))
+    entry = WatchlistEntry(
+        "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+    )
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", Mock(return_value=scrape([entry])))
+
+    outcome = main.run_sync_cycle(
+        config_with_sonarr(user()), ObservabilityService("127.0.0.1", 0), 1
+    )
+
+    assert outcome == "partial"
+    radarr.check_radarr_state.assert_called_once()
+    jellyfin.add_to_collection.assert_called_once()

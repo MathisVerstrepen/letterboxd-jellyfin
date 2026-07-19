@@ -562,7 +562,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Work admitted by the latest cycle. These are local actions, not Radarr's remote queue depth.",
+      "description": "Work attempted or admitted by the latest cycle. These are local provider actions, not any provider's remote queue depth.",
       "fieldConfig": {
         "defaults": {
           "color": {

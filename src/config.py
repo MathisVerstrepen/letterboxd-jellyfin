@@ -47,6 +47,26 @@ def load_config() -> dict[str, Any]:
         if not isinstance(values, dict) or any(not values.get(key) for key in required_keys):
             raise ConfigurationError(f"Required {section} configuration is missing")
 
+    if "sonarr" in loaded:
+        sonarr = loaded["sonarr"]
+        required = ("url", "api_key", "root_folder_path", "quality_profile_id")
+        if not isinstance(sonarr, dict) or any(
+            not isinstance(sonarr.get(key), str) or not sonarr[key].strip()
+            for key in required[:3]
+        ):
+            raise ConfigurationError("Sonarr configuration is incomplete or invalid")
+        profile_id = sonarr.get("quality_profile_id")
+        timeout = sonarr.get("timeout", 60)
+        if (
+            isinstance(profile_id, bool)
+            or not isinstance(profile_id, int)
+            or profile_id <= 0
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or timeout <= 0
+        ):
+            raise ConfigurationError("Sonarr configuration is incomplete or invalid")
+
     users = loaded.get("users", [])
     if not isinstance(users, list):
         raise ConfigurationError("Users configuration must be a list")

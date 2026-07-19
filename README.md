@@ -2,7 +2,7 @@
 
 # Letterboxd-Jellyfin Integration
 
-Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The service discovers newly added watchlist movies, adds or monitors them in Radarr, adds movies that are already available to the configured Jellyfin collection, and removes watched collection items on a schedule.
+Sync Letterboxd watchlists with Radarr, optional Sonarr, and existing Jellyfin collections. Movies retain the Radarr/Jellyfin workflow, while series can be monitored and searched through Sonarr only.
 
 ## Table of contents
 
@@ -21,6 +21,7 @@ Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The se
 -   **Multi-User Support**: Syncs multiple Letterboxd users from one configuration file.
 -   **Incremental Syncing**: After the first run, stops scraping when it reaches the newest movie saved by the previous run.
 -   **Radarr Integration**: Adds missing movies with a configurable quality profile and root path and requests Radarr to monitor/search for them.
+-   **Optional Sonarr Integration**: Adds series, monitors all seasons and newly added episodes, and immediately searches for missing episodes without adding series to Jellyfin.
 -   **Jellyfin Collection Management**:
     -   Adds a newly discovered movie to an existing collection only when Radarr already reports a file during that same sync.
     -   Automatically removes movies from the collection after they have been watched by the user in Jellyfin.
@@ -32,16 +33,17 @@ Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The se
 
 The service runs one cycle immediately after startup. Each cycle performs the following work for every configured user:
 
-1.  **Fetch New Movies**: It scrapes the user's Letterboxd watchlist. When saved state exists, it stops at the previously saved Letterboxd entry and processes only newer entries. A failed or incomplete scrape is distinguished from a successful no-change result and does not advance the discovery cursor.
+1.  **Fetch New Items**: It classifies Letterboxd entries from their TMDB movie or TV links. When saved state exists, it stops at the previous Letterboxd entry. The first cycle after Sonarr is enabled performs one durable historical series-only pass without replaying historical movies; new users use one full mixed pass.
 2.  **Process with Radarr**: The first dependent lookup in a cycle loads Radarr's installed-movie inventory once. Installed movies are resolved from that snapshot; each distinct TMDB ID missing from it uses at most one detail lookup during the cycle. The service still requests that each eligible user movie be added/monitored using the configured folder and quality profile. Failed Letterboxd detail and Radarr operations remain pending for a later cycle.
 3.  **Update Jellyfin**:
     -   For each newly discovered movie that already has a Radarr file, it looks for the movie in Jellyfin and adds it to the configured collection. Failed Jellyfin operations remain pending without repeating a completed Radarr stage.
     -   It checks the collection for movies watched by the configured Jellyfin user and removes them.
-4.  **Checkpoint State**: It transactionally checkpoints the Letterboxd cursor and each changed movie's processing status in SQLite after discovery and every successful or retryable stage transition.
+4.  **Process with Sonarr**: When configured, the service resolves each series by exact TMDB identity, monitors all seasons and new items, and immediately requests a missing-episode search. Series never enter Jellyfin collection or watched-cleanup paths.
+5.  **Checkpoint State**: It transactionally checkpoints the Letterboxd cursor, movie and series workflow records, and the one-time series-backfill marker in SQLite after discovery and every successful or retryable stage transition.
 
 > **Current limitation:** After a successful Radarr queue attempt reports that a movie has no file, that movie is not revisited automatically when its download later completes. Jellyfin collection addition is attempted only when Radarr reports that it already has a file during the successful queue attempt. Add later downloads to Jellyfin manually if needed.
 
-After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial. One proxy manager and the Radarr and Jellyfin inventory caches are shared by all users in that cycle. These snapshots can be stale after a service changes mid-cycle and are discarded before the next cycle; mutable per-user collection and watched-item responses are not cached.
+After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial. One proxy manager and shared Radarr, optional Sonarr, and Jellyfin clients are used by all users in that cycle; provider inventory and lookup caches are discarded before the next cycle. Mutable per-user collection and watched-item responses are not cached.
 
 ```mermaid
 sequenceDiagram
@@ -50,6 +52,7 @@ sequenceDiagram
     participant SyncManager as "SyncManager"
     participant Letterboxd as "letterboxd.py"
     participant Radarr as "radarr.py"
+    participant Sonarr as "sonarr.py (optional)"
     participant Jellyfin as "jellyfin.py"
     participant State as "state_manager.py"
 
@@ -70,6 +73,10 @@ sequenceDiagram
             end
         end
 
+        opt Sonarr configured
+            SyncManager->>Sonarr: Resolve exact TMDB series, monitor all, and search missing episodes
+        end
+
         opt Collection configured
             SyncManager->>Jellyfin: Find and remove watched collection items
         end
@@ -88,6 +95,7 @@ sequenceDiagram
 -   **Docker** and **Docker Compose** installed on your system.
 -   A running **Jellyfin** instance.
 -   A running **Radarr** instance.
+-   Optionally, an operator-provided **Sonarr v3/v4** instance. It is not included in either Compose stack.
 -   The usernames of the Letterboxd accounts you wish to sync.
 -   (Optional) A list of proxies if you plan to sync a large number of movies or run the script very frequently.
 
@@ -148,9 +156,17 @@ radarr:
   quality_profile_id: 1         # ID of an existing Radarr quality profile.
   timeout: 60                   # Radarr request timeout in seconds.
 
-  animated_movies:
+    animated_movies:
     enabled: true             # Set to true to use a separate path for animations.
     root_folder_path: "/movies/Animated" # Path for animated movies.
+
+# Optional: omit the complete section for movie-only operation.
+sonarr:
+  url: "http://127.0.0.1:8989" # Operator-provided Sonarr v3/v4 API.
+  api_key: "YOUR_SONARR_API_KEY"
+  root_folder_path: "/series"   # Path as Sonarr sees it.
+  quality_profile_id: 1          # ID of an existing Sonarr quality profile.
+  timeout: 60
 
 # --- Letterboxd & Proxies ---
 letterboxd:
@@ -179,6 +195,8 @@ users:
 
 `proxy_file` takes priority over `proxies`. If the configured file is missing or no usable proxies remain, the service logs the condition and uses direct requests. Proxy loading, validation, and rotation state are shared across all users in one cycle and rebuilt for the next cycle. `allow_direct_fallback` specifically controls whether a failed request through a loaded proxy is retried without one.
 
+The `sonarr` section is absent-or-complete. When present, `url`, `api_key`, and `root_folder_path` must be non-empty strings, `quality_profile_id` must be a positive integer, and optional `timeout` must be a positive integer (default `60`). Removing the section pauses pending series work without deleting it; movies continue normally. Re-adding it resumes retries and does not repeat a completed historical backfill. A partial historical traversal leaves the durable backfill marker incomplete, so a later cycle retries the series-only pass while completed endpoint history prevents duplicate provider work.
+
 Configuration is loaded once at process startup. Restart the container after changing any setting:
 
 ```bash
@@ -187,11 +205,11 @@ docker compose restart letterboxd-sync
 
 A restart triggers a cycle immediately. SQLite state is retained at `/app/data/sync_state.db` by production Compose, so normal restarts remain incremental and retry pending movie stages. `SYNC_STATE_DB_PATH` selects the authoritative SQLite database. `SYNC_STATE_PATH` selects only the legacy JSON import source. If `SYNC_STATE_DB_PATH` is unset, the database is derived beside the JSON source by replacing a final `.json` suffix with `.db`, or by appending `.db` otherwise.
 
-When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. An exact application schema-version-1 SQLite database is upgraded transactionally to schema version 2 by adding the pending-status lookup index; rows and existing indexes are retained. Completed movie history remains durable in SQLite and prevents rediscovery from repeating remote work, but only the five pending/retry statuses are hydrated into each user's active work map. Once a database exists it always takes precedence: a corrupt, foreign, or unsupported database stops the cycle rather than falling back to potentially stale JSON. New databases are created with mode `0600` where the platform supports it; existing file ownership and permissions are left unchanged.
+When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` schema-version-3 temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. Exact schema-version-1 and schema-version-2 SQLite databases are verified before a transactional upgrade to version 3; existing movie tables, rows, and indexes are retained, and separate series workflow and per-user backfill-marker tables are added. Completed movie and series endpoint history prevents rediscovery from repeating remote work. Once a database exists it always takes precedence: a corrupt, foreign, unsupported, or non-exact database stops the cycle rather than falling back to JSON.
 
-Before upgrading, stop the service and back up both `sync_state.json` and any existing `sync_state.db` using your normal filesystem backup process. To restore SQLite state, stop the service and replace the database with a known-good database created by this application. Do not delete an invalid database expecting automatic JSON recovery: move or replace it deliberately after preserving it for diagnosis. Deleting the database while leaving the retained JSON causes the next start to import that now-stale pre-migration snapshot again and may repeat remote work.
+Before the first schema-version-3 startup, stop the service and back up `sync_state.db` and any adjacent `sync_state.db-journal` file, plus the retained `sync_state.json`, using your normal filesystem backup process. A failed verified migration rolls back to the exact source version and stops before provider clients initialize. To restore state, stop the service and replace the database with a known-good application database. Do not delete an invalid database expecting automatic JSON recovery; retained JSON may be stale and reimporting it can repeat remote work.
 
-Code that accepts only SQLite schema version 1 rejects a database after its automatic version-2 upgrade. To downgrade to that code, stop the service and restore the pre-upgrade version-1 database backup; do not only decrement `user_version`, because the version-2 index will still fail exact schema validation. Downgrading to a JSON-only release is also not lossless. The retained JSON contains none of the checkpoints committed after SQLite migration. Stop the service, restore or select the retained JSON for the older release, and expect that work completed since migration can be retried. SQLite checkpoints provide transactional local persistence, but a remote operation that succeeds immediately before a checkpoint failure remains at-least-once and can also be repeated.
+Code that supports only schema version 2 cannot open a version-3 database. To roll back the application after a successful upgrade, stop the service and restore the complete pre-upgrade database backup; there is no supported in-place downgrade, and changing `PRAGMA user_version` or deleting series tables manually will fail exact validation. Removing the optional `sonarr` section safely pauses series processing without deleting state and is not a schema downgrade. SQLite checkpoints are transactional, but a remote add that succeeds immediately before a checkpoint failure remains at-least-once and can be retried.
 
 ## Health and observability
 
@@ -231,7 +249,7 @@ python -m ruff check .
 python -m pytest
 ```
 
-A `docker-compose.dev.yml` file is included to start separate Radarr and Jellyfin instances for development. It does not start the Letterboxd-Jellyfin sync service. The development services use `latest` images, store data under `dev-environment/`, and publish Radarr on port `7879` and Jellyfin on ports `8097`/`8921`.
+A `docker-compose.dev.yml` file is included to start separate Radarr and Jellyfin instances for development. It does not start Sonarr or the Letterboxd-Jellyfin sync service; use an operator-provided Sonarr instance when testing that optional integration. The development services use `latest` images, store data under `dev-environment/`, and publish Radarr on port `7879` and Jellyfin on ports `8097`/`8921`.
 
 To use it, run:
 ```bash

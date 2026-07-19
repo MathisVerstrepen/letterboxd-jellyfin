@@ -13,6 +13,7 @@ from src.observability import ObservabilityService
 from src.proxies import ProxyManager
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
+from src.sonarr import SonarrClient
 from src.state_manager import SQLiteStateStore, StateCheckpoint
 from src.sync import SyncManager
 
@@ -84,6 +85,26 @@ def _run_sync_cycle(
                     exc_info=True,
                 )
 
+        sonarr_enabled = clients_ready and "sonarr" in config
+        sonarr_client = None
+        sonarr_config = config.get("sonarr", {})
+        if sonarr_enabled:
+            try:
+                sonarr_client = SonarrClient(
+                    url=sonarr_config["url"],
+                    api_key=sonarr_config["api_key"],
+                    timeout=sonarr_config.get("timeout", 60),
+                )
+            except Exception:
+                failures["sonarr"] += 1
+                logger.error(
+                    "Sonarr client could not be initialized",
+                    extra={
+                        "event": "sonarr_client_initialization_failed",
+                        "stage": "sonarr",
+                    },
+                )
+
         if clients_ready:
             for user_config in config.get("users", []):
                 if not isinstance(user_config, dict):
@@ -131,6 +152,9 @@ def _run_sync_cycle(
                             radarr_config,
                             proxy_manager=proxy_manager,
                             completed_endpoint_lookup=completed_endpoint_lookup,
+                            sonarr=sonarr_client,
+                            sonarr_config=sonarr_config,
+                            sonarr_enabled=sonarr_enabled,
                         )
                         result = manager.run()
                     except Exception:

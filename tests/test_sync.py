@@ -10,6 +10,7 @@ from src.results import (
     MutationResult,
     PlayedMoviesResult,
     RadarrLookupResult,
+    SonarrLookupResult,
     StateSaveResult,
     WatchlistEntry,
     WatchlistResult,
@@ -49,7 +50,13 @@ def watchlist(entries=(), *, outcome="success", complete=True, cursor="film/a/",
 
 
 def build_manager(
-    *, state=None, collection_id="collection", checkpoint=None, completed_lookup=None
+    *,
+    state=None,
+    collection_id="collection",
+    checkpoint=None,
+    completed_lookup=None,
+    sonarr_enabled=False,
+    sonarr=None,
 ):
     jellyfin = Mock()
     jellyfin.get_movie_id.return_value = "jf-id"
@@ -61,7 +68,12 @@ def build_manager(
     radarr.add_to_radarr_download_queue.return_value = MutationResult(
         attempted=1, succeeded=1
     )
-    user_state = state or {"cursor": None, "movies": {}}
+    user_state = state or {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
     checkpoint = checkpoint or Mock(return_value=StateSaveResult())
     completed_lookup = completed_lookup or Mock(return_value=CompletedEndpointsResult())
     proxy_manager = Mock()
@@ -83,6 +95,9 @@ def build_manager(
         },
         proxy_manager=proxy_manager,
         completed_endpoint_lookup=completed_lookup,
+        sonarr=sonarr,
+        sonarr_config={"root_folder_path": "/series", "quality_profile_id": 8},
+        sonarr_enabled=sonarr_enabled,
     )
     return manager, user_state, jellyfin, radarr, checkpoint
 
@@ -112,7 +127,9 @@ def test_failed_scrape_is_counted_but_existing_retry_runs(monkeypatch):
 
 def test_discovery_checkpoints_before_radarr_and_completes(monkeypatch):
     manager, state, _, radarr, checkpoint = build_manager()
-    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    entry = WatchlistEntry(
+        "film/a/", LetterboxdDetailResult("resolved", "movie", "1")
+    )
     set_watchlist(monkeypatch, watchlist([entry]))
     checkpoints = []
     checkpoint.side_effect = lambda delta: checkpoints.append(delta) or StateSaveResult()
@@ -126,6 +143,7 @@ def test_discovery_checkpoints_before_radarr_and_completes(monkeypatch):
     assert checkpoints[0].movie_changes[0].movie["status"] == "pending_radarr"
     assert result.queue_counts == {
         "radarr_add": 1,
+        "sonarr_add": 0,
         "jellyfin_add": 1,
         "jellyfin_remove": 0,
     }
@@ -155,7 +173,7 @@ def test_persisted_letterboxd_retry_advances_on_later_run(monkeypatch):
     monkeypatch.setattr(
         sync,
         "extract_tmdb_id_from_endpoint",
-        Mock(return_value=LetterboxdDetailResult("movie", "1")),
+        Mock(return_value=LetterboxdDetailResult("resolved", "movie", "1")),
     )
     radarr.check_radarr_state.return_value = RadarrLookupResult(movie_state(has_file=False))
     manager.run()
@@ -237,7 +255,9 @@ def test_rediscovery_does_not_downgrade_completed_record(monkeypatch):
     completed = record("completed", "1", "Movie", 2020, "jellyfin_added")
     state = {"cursor": None, "movies": {"film/a/": deepcopy(completed)}}
     manager, state, jellyfin, radarr, _ = build_manager(state=state)
-    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    entry = WatchlistEntry(
+        "film/a/", LetterboxdDetailResult("resolved", "movie", "1")
+    )
     set_watchlist(monkeypatch, watchlist([entry]))
     manager.run()
     assert state["movies"]["film/a/"] == completed
@@ -252,7 +272,9 @@ def test_rediscovery_skips_completed_endpoint_not_hydrated_in_state(monkeypatch)
     manager, state, jellyfin, radarr, checkpoint = build_manager(
         completed_lookup=completed_lookup
     )
-    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    entry = WatchlistEntry(
+        "film/a/", LetterboxdDetailResult("resolved", "movie", "1")
+    )
     set_watchlist(monkeypatch, watchlist([entry], cursor=None))
 
     result = manager.run()
@@ -270,7 +292,9 @@ def test_completed_endpoint_lookup_failure_stops_all_side_effects(monkeypatch):
     manager, _, jellyfin, radarr, checkpoint = build_manager(
         completed_lookup=completed_lookup
     )
-    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    entry = WatchlistEntry(
+        "film/a/", LetterboxdDetailResult("resolved", "movie", "1")
+    )
     set_watchlist(monkeypatch, watchlist([entry]))
 
     result = manager.run()
@@ -285,7 +309,9 @@ def test_completed_endpoint_lookup_failure_stops_all_side_effects(monkeypatch):
 def test_checkpoint_failure_stops_before_remote_side_effect(monkeypatch):
     checkpoint = Mock(return_value=StateSaveResult(failed_items=1))
     manager, _, jellyfin, radarr, _ = build_manager(checkpoint=checkpoint)
-    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    entry = WatchlistEntry(
+        "film/a/", LetterboxdDetailResult("resolved", "movie", "1")
+    )
     set_watchlist(monkeypatch, watchlist([entry]))
     result = manager.run()
     assert not result.completed
@@ -314,3 +340,69 @@ def test_animated_movie_uses_animated_root(monkeypatch):
     radarr.check_radarr_state.return_value = RadarrLookupResult(movie)
     manager.run()
     assert radarr.add_to_radarr_download_queue.call_args == call([movie], "/animated", 7)
+
+
+def test_existing_user_series_backfill_does_not_replay_movies(monkeypatch):
+    state = {
+        "cursor": {"kind": "letterboxd", "value": "film/old/"},
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
+    sonarr = Mock()
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(
+        state={"tmdbId": 20}, installed=True
+    )
+    manager, state, jellyfin, radarr, checkpoint = build_manager(
+        state=state, sonarr_enabled=True, sonarr=sonarr
+    )
+    series_entry = WatchlistEntry(
+        "show/a/", LetterboxdDetailResult("resolved", "series", "20")
+    )
+    scrape = Mock(
+        side_effect=[
+            watchlist([series_entry], cursor="show/a/"),
+            watchlist([], cursor=None),
+        ]
+    )
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape)
+
+    result = manager.run()
+
+    assert result.completed
+    assert state["series_backfill_complete"] is True
+    assert state["series"]["show/a/"]["status"] == "completed"
+    assert "film/historical/" not in state["movies"]
+    assert scrape.call_args_list[0].kwargs == {
+        "include_series": True,
+        "include_movies": False,
+    }
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.add_to_collection.assert_not_called()
+    assert checkpoint.call_count == 3
+
+
+def test_new_user_mixed_scan_adds_series_to_sonarr_only(monkeypatch):
+    sonarr = Mock()
+    resource = {"tmdbId": 20}
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(state=resource)
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    manager, state, jellyfin, radarr, _ = build_manager(
+        sonarr_enabled=True, sonarr=sonarr
+    )
+    entry = WatchlistEntry(
+        "show/a/", LetterboxdDetailResult("resolved", "series", "20")
+    )
+    scrape = set_watchlist(monkeypatch, watchlist([entry], cursor="show/a/"))
+
+    result = manager.run()
+
+    assert state["series_backfill_complete"] is True
+    assert result.queue_counts["sonarr_add"] == 1
+    sonarr.add_to_sonarr_download_queue.assert_called_once_with(resource, "/series", 8)
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.get_movie_id.assert_not_called()
+    jellyfin.add_to_collection.assert_not_called()
+    assert scrape.call_args.kwargs == {"include_series": True, "include_movies": True}

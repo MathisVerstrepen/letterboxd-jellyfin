@@ -36,6 +36,15 @@ radarr:
     # Root path for animated movies. Only used if 'animated_movies.enabled' is true.
     root_folder_path: "/movies/Animated"
 
+# Optional. Omit this entire section to keep movie-only behavior.
+# Sonarr is operator-provided; the development Compose stack does not include it.
+sonarr:
+  url: "http://127.0.0.1:8989"
+  api_key: "YOUR_SONARR_API_KEY"
+  root_folder_path: "/series"
+  quality_profile_id: 1
+  timeout: 60
+
 # --- Letterboxd & Proxies ---
 letterboxd:
   # The number of parallel requests to make to Letterboxd.

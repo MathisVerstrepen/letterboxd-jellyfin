@@ -280,9 +280,15 @@ class SyncManager:
         failures["sonarr"] += lookup.failed_items
         succeeded = lookup.installed
         if lookup.resource is not None and not lookup.installed:
+            folder_path = self.sonarr_config["root_folder_path"]
+            animated_tv = self.sonarr_config.get("animated_tv", {})
+            if animated_tv.get("enabled") is True and lookup.resource.get(
+                "is_animation"
+            ) is True:
+                folder_path = animated_tv["root_folder_path"]
             result = self.sonarr.add_to_sonarr_download_queue(
                 lookup.resource,
-                self.sonarr_config["root_folder_path"],
+                folder_path,
                 self.sonarr_config["quality_profile_id"],
             )
             queue_counts["sonarr_add"] += result.attempted

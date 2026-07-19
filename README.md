@@ -167,6 +167,9 @@ sonarr:
   root_folder_path: "/series"   # Path as Sonarr sees it.
   quality_profile_id: 1          # ID of an existing Sonarr quality profile.
   timeout: 60
+  animated_tv:
+    enabled: true
+    root_folder_path: "/series/Animated" # Alternative path as Sonarr sees it.
 
 # --- Letterboxd & Proxies ---
 letterboxd:
@@ -195,7 +198,7 @@ users:
 
 `proxy_file` takes priority over `proxies`. If the configured file is missing or no usable proxies remain, the service logs the condition and uses direct requests. Proxy loading, validation, and rotation state are shared across all users in one cycle and rebuilt for the next cycle. `allow_direct_fallback` specifically controls whether a failed request through a loaded proxy is retried without one.
 
-The `sonarr` section is absent-or-complete. When present, `url`, `api_key`, and `root_folder_path` must be non-empty strings, `quality_profile_id` must be a positive integer, and optional `timeout` must be a positive integer (default `60`). Removing the section pauses pending series work without deleting it; movies continue normally. Re-adding it resumes retries and does not repeat a completed historical backfill. A partial historical traversal leaves the durable backfill marker incomplete, so a later cycle retries the series-only pass while completed endpoint history prevents duplicate provider work.
+The `sonarr` section is absent-or-complete. When present, `url`, `api_key`, and `root_folder_path` must be non-empty strings, `quality_profile_id` must be a positive integer, and optional `timeout` must be a positive integer (default `60`). Optional global `animated_tv` requires a boolean `enabled`; when enabled, it also requires a non-empty alternative `root_folder_path`. Sonarr lookup resources are considered animated only when their `genres` value is a list containing the exact, case-sensitive element `Animation`. Animated routing changes only the root path: quality profile, monitor-all behavior, new-item monitoring, and immediate missing-episode search remain identical to standard series. Removing the Sonarr section pauses pending series work without deleting it; movies continue normally. Re-adding it resumes retries and does not repeat a completed historical backfill. A partial historical traversal leaves the durable backfill marker incomplete, so a later cycle retries the series-only pass while completed endpoint history prevents duplicate provider work.
 
 Configuration is loaded once at process startup. Restart the container after changing any setting:
 

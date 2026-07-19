@@ -66,6 +66,21 @@ def load_config() -> dict[str, Any]:
             or timeout <= 0
         ):
             raise ConfigurationError("Sonarr configuration is incomplete or invalid")
+        if "animated_tv" in sonarr:
+            animated_tv = sonarr["animated_tv"]
+            if not isinstance(animated_tv, dict) or not isinstance(
+                animated_tv.get("enabled"), bool
+            ):
+                raise ConfigurationError("Sonarr configuration is incomplete or invalid")
+            animated_root = animated_tv.get("root_folder_path")
+            if animated_tv["enabled"] and (
+                not isinstance(animated_root, str) or not animated_root.strip()
+            ):
+                raise ConfigurationError("Sonarr configuration is incomplete or invalid")
+            if animated_root is not None and (
+                not isinstance(animated_root, str) or not animated_root.strip()
+            ):
+                raise ConfigurationError("Sonarr configuration is incomplete or invalid")
 
     users = loaded.get("users", [])
     if not isinstance(users, list):

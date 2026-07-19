@@ -40,6 +40,62 @@ sonarr:
 
 
 @pytest.mark.parametrize(
+    "animated_tv",
+    [
+        "  animated_tv: {enabled: false}\n",
+        "  animated_tv: {enabled: false, root_folder_path: /animation}\n",
+        "  animated_tv: {enabled: true, root_folder_path: /animation}\n",
+    ],
+)
+def test_valid_animated_tv_configuration_loads(tmp_path, monkeypatch, animated_tv):
+    loaded = load(
+        tmp_path,
+        monkeypatch,
+        """
+sonarr:
+  url: http://sonarr.invalid
+  api_key: sonarr-key
+  root_folder_path: /series
+  quality_profile_id: 3
+"""
+        + animated_tv,
+    )
+    assert loaded["sonarr"]["animated_tv"]["enabled"] in {True, False}
+
+
+@pytest.mark.parametrize(
+    "animated_tv",
+    [
+        "  animated_tv: []\n",
+        "  animated_tv: {}\n",
+        "  animated_tv: {enabled: 1, root_folder_path: /animation}\n",
+        "  animated_tv: {enabled: true}\n",
+        "  animated_tv: {enabled: true, root_folder_path: ''}\n",
+        "  animated_tv: {enabled: false, root_folder_path: 1}\n",
+        "  animated_tv: {enabled: false, root_folder_path: '   '}\n",
+    ],
+)
+def test_invalid_animated_tv_configuration_is_generic(
+    tmp_path, monkeypatch, animated_tv
+):
+    with pytest.raises(ConfigurationError) as error:
+        load(
+            tmp_path,
+            monkeypatch,
+            """
+sonarr:
+  url: http://sonarr.invalid
+  api_key: sonarr-key
+  root_folder_path: /series
+  quality_profile_id: 3
+"""
+            + animated_tv,
+        )
+    assert str(error.value) == "Sonarr configuration is incomplete or invalid"
+    assert "/animation" not in str(error.value)
+
+
+@pytest.mark.parametrize(
     "sonarr",
     [
         "sonarr: {}\n",

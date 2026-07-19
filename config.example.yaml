@@ -44,6 +44,10 @@ sonarr:
   root_folder_path: "/series"
   quality_profile_id: 1
   timeout: 60
+  animated_tv:
+    # Only exact "Animation" entries in Sonarr's genres list use this path.
+    enabled: true
+    root_folder_path: "/series/Animated"
 
 # --- Letterboxd & Proxies ---
 letterboxd:

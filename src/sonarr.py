@@ -68,7 +68,12 @@ class SonarrClient:
             )
         ):
             return None
-        return resource
+        classified = dict(resource)
+        genres = resource.get("genres", [])
+        classified["is_animation"] = (
+            isinstance(genres, list) and "Animation" in genres
+        )
+        return classified
 
     def _load_inventory(self, *, force: bool = False) -> None:
         if self._inventory_loaded and not force:
@@ -147,6 +152,7 @@ class SonarrClient:
     ) -> MutationResult:
         body = copy.deepcopy(resource)
         body.pop("id", None)
+        body.pop("is_animation", None)
         body.update(
             {
                 "rootFolderPath": root_path,

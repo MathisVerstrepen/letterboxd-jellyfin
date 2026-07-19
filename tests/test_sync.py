@@ -57,6 +57,7 @@ def build_manager(
     completed_lookup=None,
     sonarr_enabled=False,
     sonarr=None,
+    sonarr_config=None,
 ):
     jellyfin = Mock()
     jellyfin.get_movie_id.return_value = "jf-id"
@@ -96,7 +97,8 @@ def build_manager(
         proxy_manager=proxy_manager,
         completed_endpoint_lookup=completed_lookup,
         sonarr=sonarr,
-        sonarr_config={"root_folder_path": "/series", "quality_profile_id": 8},
+        sonarr_config=sonarr_config
+        or {"root_folder_path": "/series", "quality_profile_id": 8},
         sonarr_enabled=sonarr_enabled,
     )
     return manager, user_state, jellyfin, radarr, checkpoint
@@ -406,3 +408,43 @@ def test_new_user_mixed_scan_adds_series_to_sonarr_only(monkeypatch):
     jellyfin.get_movie_id.assert_not_called()
     jellyfin.add_to_collection.assert_not_called()
     assert scrape.call_args.kwargs == {"include_series": True, "include_movies": True}
+
+
+@pytest.mark.parametrize(
+    ("animated_tv", "is_animation", "expected_root"),
+    [
+        (None, True, "/series"),
+        ({"enabled": False}, True, "/series"),
+        ({"enabled": True, "root_folder_path": "/animated-series"}, False, "/series"),
+        (
+            {"enabled": True, "root_folder_path": "/animated-series"},
+            True,
+            "/animated-series",
+        ),
+    ],
+)
+def test_sonarr_animated_tv_changes_only_root(
+    monkeypatch, animated_tv, is_animation, expected_root
+):
+    sonarr = Mock()
+    resource = {"tmdbId": 20, "is_animation": is_animation}
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(state=resource)
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    sonarr_config = {"root_folder_path": "/series", "quality_profile_id": 8}
+    if animated_tv is not None:
+        sonarr_config["animated_tv"] = animated_tv
+    manager, _, _, _, _ = build_manager(
+        sonarr_enabled=True, sonarr=sonarr, sonarr_config=sonarr_config
+    )
+    entry = WatchlistEntry(
+        "show/a/", LetterboxdDetailResult("resolved", "series", "20")
+    )
+    set_watchlist(monkeypatch, watchlist([entry], cursor="show/a/"))
+
+    manager.run()
+
+    sonarr.add_to_sonarr_download_queue.assert_called_once_with(
+        resource, expected_root, 8
+    )

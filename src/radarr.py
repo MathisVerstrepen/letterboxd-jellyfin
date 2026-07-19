@@ -31,6 +31,10 @@ class RadarrClient:
         self.headers = {"X-Api-Key": api_key}
         self.timeout = timeout
         self.logger = get_logger("radarr")
+        self._inventory_loaded = False
+        self._inventory_available = False
+        self._inventory: dict[str, RadarrState] = {}
+        self._detail_cache: dict[str, RadarrLookupResult] = {}
 
         self.logger.info(
             "Radarr client initialized",
@@ -52,12 +56,66 @@ class RadarrClient:
         except requests.exceptions.RequestException as e:
             raise RadarrException(f"Unable to connect to Radarr server: {e}") from e
 
+    @staticmethod
+    def _map_movie_resource(movie_data: dict) -> RadarrState | None:
+        genres = movie_data.get("genres", [])
+        state = {
+            "hasFile": movie_data.get("movieFile") is not None,
+            "monitored": movie_data.get("monitored", False),
+            "name": movie_data.get("title"),
+            "tmdbId": movie_data.get("tmdbId"),
+            "productionYear": movie_data.get("year"),
+            "is_animation": isinstance(genres, list) and "Animation" in genres,
+        }
+        if not state["name"] or state["tmdbId"] is None or state["productionYear"] is None:
+            return None
+        return state
+
+    def _load_inventory(self) -> None:
+        if self._inventory_loaded:
+            return
+        self._inventory_loaded = True
+        try:
+            response = requests.get(
+                f"{self.base_url}/movie",
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" not in content_type:
+                raise ValueError("Radarr inventory returned non-JSON content")
+            resources = response.json()
+            if not isinstance(resources, list):
+                raise ValueError("Radarr inventory is not a list")
+            inventory = {}
+            for resource in resources:
+                if not isinstance(resource, dict):
+                    continue
+                state = self._map_movie_resource(resource)
+                if state is not None:
+                    inventory[str(state["tmdbId"])] = state
+            self._inventory = inventory
+            self._inventory_available = True
+        except (requests.exceptions.RequestException, JSONDecodeError, ValueError):
+            self.logger.warning(
+                "Radarr inventory could not be loaded; using detail lookups",
+                extra={"event": "radarr_inventory_failed", "stage": "radarr"},
+            )
+
     def check_radarr_state(self, tmdb_id: str) -> RadarrLookupResult:
-        """
-        Check if a file exists for a given TMDB ID in Radarr.
-        """
+        """Check Radarr inventory and detail metadata for a TMDB ID."""
+        cache_key = str(tmdb_id)
+        self._load_inventory()
+        installed = self._inventory.get(cache_key)
+        if installed is not None:
+            return RadarrLookupResult(state=installed)
+        cached = self._detail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         url = f"{self.base_url}/movie/lookup"
-        params = {"term": f"tmdb:{tmdb_id}"}
+        params = {"term": f"tmdb:{cache_key}"}
 
         try:
             response = requests.get(
@@ -71,7 +129,9 @@ class RadarrClient:
                     "Radarr lookup returned unusable content",
                     extra={"event": "radarr_lookup_failed", "stage": "radarr"},
                 )
-                return RadarrLookupResult(state=None, failed_items=1)
+                result = RadarrLookupResult(state=None, failed_items=1)
+                self._detail_cache[cache_key] = result
+                return result
 
             res = response.json()
         except requests.exceptions.RequestException:
@@ -79,38 +139,39 @@ class RadarrClient:
                 "Radarr lookup request failed",
                 extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return RadarrLookupResult(state=None, failed_items=1)
+            result = RadarrLookupResult(state=None, failed_items=1)
+            self._detail_cache[cache_key] = result
+            return result
         except JSONDecodeError:
             self.logger.error(
                 "Radarr lookup returned invalid JSON",
                 extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return RadarrLookupResult(state=None, failed_items=1)
+            result = RadarrLookupResult(state=None, failed_items=1)
+            self._detail_cache[cache_key] = result
+            return result
 
         if not isinstance(res, list) or not res or not isinstance(res[0], dict):
             self.logger.warning(
                 "Radarr lookup returned no result",
                 extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return RadarrLookupResult(state=None, failed_items=1)
+            result = RadarrLookupResult(state=None, failed_items=1)
+            self._detail_cache[cache_key] = result
+            return result
 
         movie_data = res[0]
-        genres = movie_data.get("genres", [])
-        state = {
-            "hasFile": movie_data.get("movieFile") is not None,
-            "monitored": movie_data.get("monitored", False),
-            "name": movie_data.get("title"),
-            "tmdbId": movie_data.get("tmdbId"),
-            "productionYear": movie_data.get("year"),
-            "is_animation": isinstance(genres, list) and "Animation" in genres,
-        }
-        if not state["name"] or state["tmdbId"] is None or state["productionYear"] is None:
+        state = self._map_movie_resource(movie_data)
+        if state is None:
             self.logger.error(
                 "Radarr lookup returned unusable movie data",
                 extra={"event": "radarr_lookup_failed", "stage": "radarr"},
             )
-            return RadarrLookupResult(state=None, failed_items=1)
-        return RadarrLookupResult(state=state)
+            result = RadarrLookupResult(state=None, failed_items=1)
+        else:
+            result = RadarrLookupResult(state=state)
+        self._detail_cache[cache_key] = result
+        return result
 
     def get_movies_state(self, tmdb_ids: set[str]) -> list[RadarrState]:
         """Processes a list of TMDB IDs and returns their Radarr states."""

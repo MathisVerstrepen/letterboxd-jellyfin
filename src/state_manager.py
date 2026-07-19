@@ -2,14 +2,19 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from src.logger import get_logger
-from src.results import StateInitializationResult, StateLoadResult, StateSaveResult
+from src.results import (
+    CompletedEndpointsResult,
+    StateInitializationResult,
+    StateLoadResult,
+    StateSaveResult,
+)
 
 LEGACY_STATE_FILE_PATH = os.getenv("SYNC_STATE_PATH", "sync_state.json")
 
@@ -29,16 +34,16 @@ STATE_DB_PATH = (
 logger = get_logger("state")
 
 JSON_STATE_VERSION = 2
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 1279412806
-STATUSES = {
+PENDING_STATUSES = (
     "retry_letterboxd",
     "pending_radarr",
     "retry_radarr",
     "pending_jellyfin",
     "retry_jellyfin",
-    "completed",
-}
+)
+STATUSES = frozenset((*PENDING_STATUSES, "completed"))
 COMPLETION_REASONS = {
     "jellyfin_added",
     "jellyfin_not_found",
@@ -47,7 +52,7 @@ COMPLETION_REASONS = {
 }
 MOVIE_FIELDS = {"tmdb_id", "status", "title", "year", "completion_reason"}
 
-SCHEMA_SQL = """
+SCHEMA_V1_SQL = """
 CREATE TABLE users (
     username TEXT PRIMARY KEY NOT NULL CHECK (length(username) > 0),
     cursor_kind TEXT,
@@ -135,6 +140,15 @@ CREATE TABLE movies (
 CREATE INDEX movies_username_movie_id_idx
 ON movies (username, movie_id);
 """
+
+SCHEMA_SQL = (
+    SCHEMA_V1_SQL
+    + """
+
+CREATE INDEX movies_username_status_movie_id_idx
+ON movies (username, status, movie_id);
+"""
+)
 
 
 def empty_user_state() -> dict[str, Any]:
@@ -296,9 +310,9 @@ class SQLiteStateStore:
         try:
             self._validate_paths()
             if os.path.exists(self.db_path):
-                connection = self._open_existing()
+                connection, migrated = self._open_existing()
                 self._connection = connection
-                return StateInitializationResult()
+                return StateInitializationResult(migrated=migrated)
 
             state = {"version": JSON_STATE_VERSION, "users": {}}
             if os.path.exists(self.legacy_json_path):
@@ -326,7 +340,7 @@ class SQLiteStateStore:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            self._connection = self._open_existing()
+            self._connection, _ = self._open_existing()
             return StateInitializationResult(migrated=migrated)
         except (json.JSONDecodeError, OSError, sqlite3.Error, TypeError, ValueError):
             logger.error(
@@ -377,9 +391,12 @@ class SQLiteStateStore:
             rows = connection.execute(
                 """
                 SELECT endpoint, tmdb_id, status, title, year, completion_reason
-                FROM movies WHERE username = ? ORDER BY movie_id
+                FROM movies
+                WHERE username = ?
+                  AND status IN (?, ?, ?, ?, ?)
+                ORDER BY movie_id
                 """,
-                (username,),
+                (username, *PENDING_STATUSES),
             )
             for endpoint, tmdb_id, status, title, year, reason in rows:
                 movie = {
@@ -399,6 +416,44 @@ class SQLiteStateStore:
                 extra={"event": "state_load_failed", "stage": "state"},
             )
             return StateLoadResult(data=empty_user_state(), failed_items=1)
+
+    def get_completed_endpoints(
+        self, username: str, endpoints: Collection[str]
+    ) -> CompletedEndpointsResult:
+        try:
+            if not isinstance(username, str) or not username:
+                raise ValueError("invalid state username")
+            if isinstance(endpoints, (str, bytes)) or not isinstance(
+                endpoints, Collection
+            ):
+                raise TypeError("invalid completed endpoint collection")
+            candidates = tuple(dict.fromkeys(endpoints))
+            for endpoint in candidates:
+                _validate_endpoint(endpoint)
+            if not candidates:
+                return CompletedEndpointsResult()
+
+            connection = self._require_connection()
+            completed = set()
+            for offset in range(0, len(candidates), 500):
+                batch = candidates[offset : offset + 500]
+                placeholders = ", ".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT endpoint FROM movies
+                    WHERE username = ? AND status = 'completed'
+                      AND endpoint IN ({placeholders})
+                    """,
+                    (username, *batch),
+                )
+                completed.update(row[0] for row in rows)
+            return CompletedEndpointsResult(endpoints=frozenset(completed))
+        except (sqlite3.Error, TypeError, ValueError):
+            logger.error(
+                "Completed movie endpoints could not be loaded",
+                extra={"event": "state_completed_lookup_failed", "stage": "state"},
+            )
+            return CompletedEndpointsResult(failed_items=1)
 
     def checkpoint_user(
         self, username: str, checkpoint: StateCheckpoint
@@ -556,15 +611,22 @@ class SQLiteStateStore:
         finally:
             connection.close()
 
-    def _open_existing(self) -> sqlite3.Connection:
+    def _open_existing(self) -> tuple[sqlite3.Connection, bool]:
         uri = f"{Path(self.db_path).resolve().as_uri()}?mode=rw"
         connection = sqlite3.connect(
             uri, uri=True, timeout=5.0, isolation_level=None
         )
         try:
-            self._verify_schema(connection)
+            version = connection.execute("PRAGMA user_version").fetchone()
+            if version == (1,):
+                self._verify_schema(connection, version=1)
+                self._configure_connection(connection)
+                self._migrate_v1_database(connection)
+                self._verify_schema(connection, version=SCHEMA_VERSION)
+                return connection, True
+            self._verify_schema(connection, version=SCHEMA_VERSION)
             self._configure_connection(connection)
-            return connection
+            return connection, False
         except Exception:
             connection.close()
             raise
@@ -577,18 +639,41 @@ class SQLiteStateStore:
         connection.execute("PRAGMA busy_timeout = 5000")
 
     @staticmethod
-    def _verify_schema(connection: sqlite3.Connection) -> None:
+    def _migrate_v1_database(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(
+                """
+                CREATE INDEX movies_username_status_movie_id_idx
+                ON movies (username, status, movie_id)
+                """
+            )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            SQLiteStateStore._verify_schema(connection, version=SCHEMA_VERSION)
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _verify_schema(connection: sqlite3.Connection, *, version: int) -> None:
         if connection.execute("PRAGMA application_id").fetchone() != (APPLICATION_ID,):
             raise sqlite3.DatabaseError("foreign state database")
-        if connection.execute("PRAGMA user_version").fetchone() != (SCHEMA_VERSION,):
+        if connection.execute("PRAGMA user_version").fetchone() != (version,):
             raise sqlite3.DatabaseError("unsupported state database schema")
 
-        schema_statements = SCHEMA_SQL.strip().split(";\n\n")
+        schema_sql = SCHEMA_V1_SQL if version == 1 else SCHEMA_SQL
+        schema_statements = schema_sql.strip().split(";\n\n")
         expected_sql = {
             "users": schema_statements[0],
             "movies": schema_statements[1],
             "movies_username_movie_id_idx": schema_statements[2].removesuffix(";"),
         }
+        if version == SCHEMA_VERSION:
+            expected_sql["movies_username_status_movie_id_idx"] = schema_statements[
+                3
+            ].removesuffix(";")
         stored_sql = {
             name: sql
             for name, sql in connection.execute(
@@ -656,6 +741,25 @@ class SQLiteStateStore:
         ]
         if explicit_columns != ["username", "movie_id"]:
             raise sqlite3.DatabaseError("invalid state ordering index")
+        if version == SCHEMA_VERSION:
+            status_index = next(
+                (
+                    row
+                    for row in indexes
+                    if row[1] == "movies_username_status_movie_id_idx"
+                ),
+                None,
+            )
+            if status_index is None or status_index[2] != 0:
+                raise sqlite3.DatabaseError("missing state status index")
+            status_columns = [
+                row[2]
+                for row in connection.execute(
+                    'PRAGMA index_info("movies_username_status_movie_id_idx")'
+                )
+            ]
+            if status_columns != ["username", "status", "movie_id"]:
+                raise sqlite3.DatabaseError("invalid state status index")
         unique_endpoint = False
         for index in indexes:
             if index[2] != 1:

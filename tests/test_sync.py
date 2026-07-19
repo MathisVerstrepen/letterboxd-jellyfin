@@ -5,6 +5,7 @@ import pytest
 
 import src.sync as sync
 from src.results import (
+    CompletedEndpointsResult,
     LetterboxdDetailResult,
     MutationResult,
     PlayedMoviesResult,
@@ -47,7 +48,9 @@ def watchlist(entries=(), *, outcome="success", complete=True, cursor="film/a/",
     )
 
 
-def build_manager(*, state=None, collection_id="collection", checkpoint=None):
+def build_manager(
+    *, state=None, collection_id="collection", checkpoint=None, completed_lookup=None
+):
     jellyfin = Mock()
     jellyfin.get_movie_id.return_value = "jf-id"
     jellyfin.add_to_collection.return_value = MutationResult(attempted=1, succeeded=1)
@@ -60,6 +63,8 @@ def build_manager(*, state=None, collection_id="collection", checkpoint=None):
     )
     user_state = state or {"cursor": None, "movies": {}}
     checkpoint = checkpoint or Mock(return_value=StateSaveResult())
+    completed_lookup = completed_lookup or Mock(return_value=CompletedEndpointsResult())
+    proxy_manager = Mock()
     manager = sync.SyncManager(
         {
             "letterboxd_username": "alice",
@@ -76,6 +81,8 @@ def build_manager(*, state=None, collection_id="collection", checkpoint=None):
             "quality_profile_id": 7,
             "animated_movies": {"enabled": True, "root_folder_path": "/animated"},
         },
+        proxy_manager=proxy_manager,
+        completed_endpoint_lookup=completed_lookup,
     )
     return manager, user_state, jellyfin, radarr, checkpoint
 
@@ -236,6 +243,43 @@ def test_rediscovery_does_not_downgrade_completed_record(monkeypatch):
     assert state["movies"]["film/a/"] == completed
     radarr.check_radarr_state.assert_not_called()
     jellyfin.add_to_collection.assert_not_called()
+
+
+def test_rediscovery_skips_completed_endpoint_not_hydrated_in_state(monkeypatch):
+    completed_lookup = Mock(
+        return_value=CompletedEndpointsResult(frozenset({"film/a/"}))
+    )
+    manager, state, jellyfin, radarr, checkpoint = build_manager(
+        completed_lookup=completed_lookup
+    )
+    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    set_watchlist(monkeypatch, watchlist([entry], cursor=None))
+
+    result = manager.run()
+
+    assert result.completed
+    assert state["movies"] == {}
+    completed_lookup.assert_called_once_with(("film/a/",))
+    checkpoint.assert_not_called()
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.add_to_collection.assert_not_called()
+
+
+def test_completed_endpoint_lookup_failure_stops_all_side_effects(monkeypatch):
+    completed_lookup = Mock(return_value=CompletedEndpointsResult(failed_items=1))
+    manager, _, jellyfin, radarr, checkpoint = build_manager(
+        completed_lookup=completed_lookup
+    )
+    entry = WatchlistEntry("film/a/", LetterboxdDetailResult("movie", "1"))
+    set_watchlist(monkeypatch, watchlist([entry]))
+
+    result = manager.run()
+
+    assert not result.completed
+    assert result.failures_by_stage["state"] == 1
+    checkpoint.assert_not_called()
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.get_user_id.assert_not_called()
 
 
 def test_checkpoint_failure_stops_before_remote_side_effect(monkeypatch):

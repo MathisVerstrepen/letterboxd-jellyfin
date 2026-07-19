@@ -13,6 +13,10 @@ def client_without_connection():
     client.headers = {"X-Api-Key": "fake-key"}
     client.timeout = 12
     client.logger = Mock()
+    client._inventory_loaded = False
+    client._inventory_available = False
+    client._inventory = {}
+    client._detail_cache = {}
     return client
 
 
@@ -49,7 +53,7 @@ def lookup_response(response_factory, data, **kwargs):
     )
 
 
-def test_lookup_maps_complete_movie_and_animation(response_factory, monkeypatch):
+def test_inventory_maps_complete_movie_and_animation(response_factory, monkeypatch):
     response = lookup_response(
         response_factory,
         [
@@ -75,7 +79,49 @@ def test_lookup_maps_complete_movie_and_animation(response_factory, monkeypatch)
         "productionYear": 2020,
         "is_animation": True,
     }
-    assert get.call_args.kwargs["params"] == {"term": "tmdb:123"}
+    get.assert_called_once_with(
+        "http://radarr.invalid/api/v3/movie",
+        headers={"X-Api-Key": "fake-key"},
+        timeout=12,
+    )
+
+
+def test_missing_id_detail_lookup_is_cached(response_factory, monkeypatch):
+    detail = lookup_response(
+        response_factory,
+        [{"title": "Movie", "tmdbId": 123, "year": 2020}],
+    )
+    get = Mock(side_effect=[lookup_response(response_factory, []), detail])
+    monkeypatch.setattr(radarr.requests, "get", get)
+    client = client_without_connection()
+
+    first = client.check_radarr_state("123")
+    second = client.check_radarr_state("123")
+
+    assert first == second
+    assert first.state["name"] == "Movie"
+    assert get.call_count == 2
+    assert get.call_args_list[1] == call(
+        "http://radarr.invalid/api/v3/movie/lookup",
+        params={"term": "tmdb:123"},
+        headers={"X-Api-Key": "fake-key"},
+        timeout=12,
+    )
+
+
+def test_inventory_failure_falls_back_and_is_not_retried(response_factory, monkeypatch):
+    failed_inventory = response_factory(status_code=503)
+    detail = lookup_response(
+        response_factory,
+        [{"title": "Movie", "tmdbId": 123, "year": 2020}],
+    )
+    get = Mock(side_effect=[failed_inventory, detail])
+    monkeypatch.setattr(radarr.requests, "get", get)
+    client = client_without_connection()
+
+    assert client.check_radarr_state("123").state is not None
+    assert client.check_radarr_state("123").state is not None
+    assert get.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -96,9 +142,8 @@ def test_lookup_maps_complete_movie_and_animation(response_factory, monkeypatch)
     ],
 )
 def test_lookup_failure_shapes(response_builder, response_factory, monkeypatch):
-    monkeypatch.setattr(
-        radarr.requests, "get", Mock(return_value=response_builder(response_factory))
-    )
+    response = response_builder(response_factory)
+    monkeypatch.setattr(radarr.requests, "get", Mock(return_value=response))
     result = client_without_connection().check_radarr_state("123")
     assert result.state is None
     assert result.failed_items == 1
@@ -113,6 +158,20 @@ def test_lookup_request_failure(response_factory, monkeypatch):
     result = client_without_connection().check_radarr_state("123")
     assert result.state is None
     assert result.failed_items == 1
+
+
+def test_detail_failure_is_cached_per_id(response_factory, monkeypatch):
+    get = Mock(
+        side_effect=[
+            lookup_response(response_factory, []),
+            lookup_response(response_factory, []),
+        ]
+    )
+    monkeypatch.setattr(radarr.requests, "get", get)
+    client = client_without_connection()
+    assert client.check_radarr_state("123").failed_items == 1
+    assert client.check_radarr_state("123").failed_items == 1
+    assert get.call_count == 2
 
 
 def movie_state():

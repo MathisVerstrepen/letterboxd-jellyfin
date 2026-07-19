@@ -1,14 +1,14 @@
 import sys
 from pathlib import Path
+
 import requests
+
+from src.exceptions import JellyfinException
 from src.logger import get_logger
 from src.results import MutationResult, PlayedMoviesResult
 
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
-
-from src.exceptions import JellyfinException
-
 
 class Jellyfin:
     def __init__(self, url: str, api_key: str) -> None:
@@ -34,7 +34,7 @@ class Jellyfin:
                     f"Failed to connect to Jellyfin server: HTTP {response.status_code}"
                 )
         except requests.exceptions.RequestException as e:
-            raise JellyfinException(f"Unable to connect to Jellyfin server: {e}")
+            raise JellyfinException(f"Unable to connect to Jellyfin server: {e}") from e
 
     def _get_movie_lookup_cache(self) -> dict:
         """
@@ -188,7 +188,11 @@ class Jellyfin:
             except requests.exceptions.RequestException:
                 self.logger.error(
                     "Jellyfin collection add request failed",
-                    extra={"event": "jellyfin_collection_add_result", "outcome": "failed", "failed_items": len(batch)},
+                    extra={
+                        "event": "jellyfin_collection_add_result",
+                        "outcome": "failed",
+                        "failed_items": len(batch),
+                    },
                 )
                 return MutationResult(
                     attempted=len(movie_ids),
@@ -200,7 +204,12 @@ class Jellyfin:
             if response.status_code != 204:
                 self.logger.error(
                     "Jellyfin rejected collection add request",
-                    extra={"event": "jellyfin_collection_add_result", "outcome": "failed", "failed_items": len(batch), "status_code": response.status_code},
+                    extra={
+                        "event": "jellyfin_collection_add_result",
+                        "outcome": "failed",
+                        "failed_items": len(batch),
+                        "status_code": response.status_code,
+                    },
                 )
                 return MutationResult(
                     attempted=len(movie_ids),
@@ -217,11 +226,13 @@ class Jellyfin:
 
         self.logger.info(
             "Jellyfin collection addition completed",
-            extra={"event": "jellyfin_collection_add_result", "outcome": "success", "count": total_added},
+            extra={
+                "event": "jellyfin_collection_add_result",
+                "outcome": "success",
+                "count": total_added,
+            },
         )
-        return MutationResult(
-            attempted=len(movie_ids), succeeded=total_added
-        )
+        return MutationResult(attempted=len(movie_ids), succeeded=total_added)
 
     def get_played_movies_from_collection(
         self, collection_id: str, user_id: str
@@ -265,7 +276,11 @@ class Jellyfin:
         else:
             self.logger.error(
                 "Jellyfin played-movie lookup failed",
-                extra={"event": "jellyfin_played_lookup_failed", "stage": "jellyfin", "status_code": response.status_code},
+                extra={
+                    "event": "jellyfin_played_lookup_failed",
+                    "stage": "jellyfin",
+                    "status_code": response.status_code,
+                },
             )
             return PlayedMoviesResult(movie_ids=[], failed_items=1, fatal=False)
 
@@ -314,7 +329,11 @@ class Jellyfin:
         except requests.exceptions.RequestException:
             self.logger.error(
                 "Jellyfin collection removal request failed",
-                extra={"event": "jellyfin_collection_remove_result", "outcome": "failed", "failed_items": len(movie_ids)},
+                extra={
+                    "event": "jellyfin_collection_remove_result",
+                    "outcome": "failed",
+                    "failed_items": len(movie_ids),
+                },
             )
             return MutationResult(
                 attempted=len(movie_ids), failed_items=len(movie_ids), fatal=True
@@ -322,14 +341,23 @@ class Jellyfin:
         if response.status_code != 204:
             self.logger.error(
                 "Jellyfin rejected collection removal request",
-                extra={"event": "jellyfin_collection_remove_result", "outcome": "failed", "failed_items": len(movie_ids), "status_code": response.status_code},
+                extra={
+                    "event": "jellyfin_collection_remove_result",
+                    "outcome": "failed",
+                    "failed_items": len(movie_ids),
+                    "status_code": response.status_code,
+                },
             )
             return MutationResult(
                 attempted=len(movie_ids), failed_items=len(movie_ids), fatal=True
             )
         self.logger.info(
             "Jellyfin collection removal completed",
-            extra={"event": "jellyfin_collection_remove_result", "outcome": "success", "count": len(movie_ids)},
+            extra={
+                "event": "jellyfin_collection_remove_result",
+                "outcome": "success",
+                "count": len(movie_ids),
+            },
         )
         return MutationResult(attempted=len(movie_ids), succeeded=len(movie_ids))
 

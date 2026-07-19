@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-
 FAILURE_STAGES = (
     "configuration",
     "letterboxd",

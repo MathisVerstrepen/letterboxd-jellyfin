@@ -17,7 +17,7 @@ def load_state() -> StateLoadResult:
     if not os.path.exists(STATE_FILE_PATH):
         return StateLoadResult(data={})
     try:
-        with open(STATE_FILE_PATH, "r", encoding="utf-8") as f:
+        with open(STATE_FILE_PATH, encoding="utf-8") as f:
             data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("state root is not an object")

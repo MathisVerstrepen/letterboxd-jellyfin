@@ -1,10 +1,11 @@
 import random
-import time
-import threading
-import requests
-from typing import Any
 import socket
+import threading
+import time
+from typing import Any
 from urllib.parse import urlparse
+
+import requests
 
 from src.exceptions import RequestException
 from src.logger import get_logger
@@ -12,18 +13,27 @@ from src.logger import get_logger
 logger = get_logger("proxy")
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/119.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
 ]
 
 
@@ -31,7 +41,10 @@ def get_browser_headers() -> dict[str, str]:
     """Returns a set of common browser headers with some randomization."""
     return {
         "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
+            "image/apng,*/*;q=0.8"
+        ),
         "Accept-Language": random.choice(
             [
                 "en-US,en;q=0.9",
@@ -103,7 +116,7 @@ class ProxyManager:
     def _load_from_file(self, file_path: str, proxy_type: str):
         """Loads proxies from a text file (IP:PORT:USER:PASS)."""
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"):
@@ -174,7 +187,10 @@ class ProxyManager:
         if not self.proxies:
             return
             
-        logger.info("Testing proxy connectivity", extra={"event": "proxy_validation_started", "count": len(self.proxies)})
+        logger.info(
+            "Testing proxy connectivity",
+            extra={"event": "proxy_validation_started", "count": len(self.proxies)},
+        )
         working_proxies = []
         
         for proxy in self.proxies:
@@ -235,7 +251,9 @@ def get_session() -> requests.Session:
         _session.headers.update(
             {
                 "User-Agent": random.choice(USER_AGENTS),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                ),
                 "Accept-Language": "en-US,en;q=0.5",
                 "Accept-Encoding": "gzip, deflate",
                 "DNT": "1",
@@ -247,7 +265,10 @@ def get_session() -> requests.Session:
 
 
 def make_request(
-    url: str, proxy: dict | None = None, delay_range: tuple[float, float] = (0.5, 2.0), allow_fallback: bool = True
+    url: str,
+    proxy: dict | None = None,
+    delay_range: tuple[float, float] = (0.5, 2.0),
+    allow_fallback: bool = True,
 ) -> requests.Response:
     """
     Makes a GET request with anti-detection measures, optionally using a provided proxy.

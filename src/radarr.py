@@ -1,8 +1,9 @@
-from typing import TypedDict
 import time
-import requests
+from typing import TypedDict
 
+import requests
 from requests.exceptions import JSONDecodeError
+
 from src.exceptions import RadarrException
 from src.logger import get_logger
 from src.results import MutationResult, RadarrLookupResult
@@ -49,7 +50,7 @@ class RadarrClient:
                     f"Failed to connect to Radarr server: HTTP {response.status_code}"
                 )
         except requests.exceptions.RequestException as e:
-            raise RadarrException(f"Unable to connect to Radarr server: {e}")
+            raise RadarrException(f"Unable to connect to Radarr server: {e}") from e
 
     def check_radarr_state(self, tmdb_id: str) -> RadarrLookupResult:
         """
@@ -155,7 +156,12 @@ class RadarrClient:
                             break
                         self.logger.error(
                             "Radarr rejected queue request",
-                            extra={"event": "radarr_queue_result", "outcome": "failed", "attempt": attempt + 1, "status_code": response.status_code},
+                            extra={
+                                "event": "radarr_queue_result",
+                                "outcome": "failed",
+                                "attempt": attempt + 1,
+                                "status_code": response.status_code,
+                            },
                         )
                         failed_items += 1
                         break
@@ -173,7 +179,11 @@ class RadarrClient:
                     else:
                         self.logger.error(
                             "Radarr queue request exhausted retries",
-                            extra={"event": "radarr_queue_result", "outcome": "failed", "attempt": attempt + 1},
+                            extra={
+                                "event": "radarr_queue_result",
+                                "outcome": "failed",
+                                "attempt": attempt + 1,
+                            },
                         )
                         failed_items += 1
         return MutationResult(

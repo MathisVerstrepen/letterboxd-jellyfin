@@ -2,7 +2,7 @@ from typing import Any
 
 from src.jellyfin import Jellyfin
 from src.letterboxd import get_new_watchlist_tmdb_ids
-from src.logger import setup_logger
+from src.logger import get_logger
 from src.proxies import ProxyManager
 from src.radarr import RadarrClient
 from src.results import SyncResult, empty_failures, empty_queue_counts
@@ -27,22 +27,19 @@ class SyncManager:
         self.radarr_config = radarr_config
         self.max_workers = letterboxd_config.get("max_concurrent_requests", 5)
         self.proxy_manager = ProxyManager(letterboxd_config)
-        self.logger = setup_logger()
+        self.logger = get_logger("sync")
 
     def run(self) -> SyncResult:
         """Run one user's work while preserving the existing side-effect order."""
         failures = empty_failures()
         queue_counts = empty_queue_counts()
-        context = {"letterboxd_username": self.letterboxd_username}
-        self.logger.info(
-            "User sync started", extra={"event": "sync_user_started", **context}
-        )
+        self.logger.info("User sync started", extra={"event": "sync_user_started"})
 
         if not self.jellyfin_username:
             failures["configuration"] += 1
             self.logger.error(
                 "Required Jellyfin username is missing",
-                extra={"event": "sync_user_failed", "stage": "configuration", **context},
+                extra={"event": "sync_user_failed", "stage": "configuration"},
             )
             return SyncResult(failures_by_stage=failures, queue_counts=queue_counts)
 
@@ -57,17 +54,25 @@ class SyncManager:
             new_tmdb_ids = watchlist.tmdb_ids
             state_advance_id: str | None = None
 
-            if not new_tmdb_ids:
-                self.logger.info(
-                    "No new Letterboxd movies found",
-                    extra={"event": "letterboxd_scrape_completed", "count": 0, **context},
-                )
-            else:
-                self.logger.info(
-                    "New Letterboxd movies found",
-                    extra={"event": "letterboxd_scrape_completed", "count": len(new_tmdb_ids), **context},
-                )
+            self.logger.info(
+                (
+                    "New Letterboxd movies found"
+                    if new_tmdb_ids
+                    else "No new Letterboxd movies found"
+                ),
+                extra={
+                    "event": "letterboxd_scrape_completed",
+                    "count": len(new_tmdb_ids),
+                    "skipped_items": watchlist.skipped_items,
+                    "failed_items": watchlist.failed_items,
+                    "outcome": "success" if watchlist.failed_items == 0 else "partial",
+                },
+            )
+            if new_tmdb_ids:
                 radarr_states = []
+                radarr_attempted = 0
+                radarr_succeeded = 0
+                radarr_failed = 0
                 for tmdb_id in new_tmdb_ids:
                     lookup = self.radarr.check_radarr_state(tmdb_id)
                     failures["radarr"] += lookup.failed_items
@@ -87,7 +92,33 @@ class SyncManager:
                         self.radarr_config.get("quality_profile_id"),
                     )
                     failures["radarr"] += queue_result.failed_items
+                    radarr_attempted += queue_result.attempted
+                    radarr_succeeded += queue_result.succeeded
+                    radarr_failed += queue_result.failed_items
                     radarr_states.append(state)
+
+                if radarr_attempted:
+                    if radarr_failed == 0:
+                        radarr_outcome = "success"
+                    elif radarr_succeeded:
+                        radarr_outcome = "partial"
+                    else:
+                        radarr_outcome = "failed"
+                    log_queue_completed = (
+                        self.logger.info
+                        if radarr_outcome == "success"
+                        else self.logger.warning
+                    )
+                    log_queue_completed(
+                        "Radarr queue processing completed",
+                        extra={
+                            "event": "radarr_queue_completed",
+                            "outcome": radarr_outcome,
+                            "attempted": radarr_attempted,
+                            "succeeded": radarr_succeeded,
+                            "failed_items": radarr_failed,
+                        },
+                    )
 
                 if self.jellyfin_collection_id:
                     jellyfin_ids_to_add = []
@@ -103,7 +134,7 @@ class SyncManager:
                                 failures["jellyfin"] += 1
                                 self.logger.error(
                                     "Jellyfin library lookup failed",
-                                    extra={"event": "sync_user_failed", "stage": "jellyfin", **context},
+                                    extra={"event": "sync_user_failed", "stage": "jellyfin"},
                                     exc_info=True,
                                 )
                                 return SyncResult(
@@ -129,7 +160,7 @@ class SyncManager:
                 else:
                     self.logger.warning(
                         "Jellyfin collection is not configured; skipping additions",
-                        extra={"event": "jellyfin_collection_add_skipped", **context},
+                        extra={"event": "jellyfin_collection_add_skipped"},
                     )
 
                 # This remains the newest scraped ID, exactly as in the previous flow.
@@ -138,7 +169,7 @@ class SyncManager:
             if not self.jellyfin_collection_id:
                 self.logger.warning(
                     "Jellyfin collection is not configured; skipping watched removal",
-                    extra={"event": "jellyfin_collection_remove_skipped", **context},
+                    extra={"event": "jellyfin_collection_remove_skipped"},
                 )
                 return self._completed(state_advance_id, failures, queue_counts)
 
@@ -148,7 +179,7 @@ class SyncManager:
                 failures["jellyfin"] += 1
                 self.logger.error(
                     "Jellyfin user lookup failed",
-                    extra={"event": "sync_user_failed", "stage": "jellyfin", **context},
+                    extra={"event": "sync_user_failed", "stage": "jellyfin"},
                     exc_info=True,
                 )
                 return SyncResult(
@@ -161,7 +192,7 @@ class SyncManager:
                 failures["jellyfin"] += 1
                 self.logger.error(
                     "Jellyfin user was not found",
-                    extra={"event": "jellyfin_user_lookup_failed", "stage": "jellyfin", **context},
+                    extra={"event": "jellyfin_user_lookup_failed", "stage": "jellyfin"},
                 )
                 return self._completed(state_advance_id, failures, queue_counts)
 
@@ -194,7 +225,7 @@ class SyncManager:
             failures["runtime"] += 1
             self.logger.error(
                 "Unexpected user sync failure",
-                extra={"event": "sync_user_failed", "stage": "runtime", **context},
+                extra={"event": "sync_user_failed", "stage": "runtime"},
                 exc_info=True,
             )
             return SyncResult(
@@ -217,7 +248,6 @@ class SyncManager:
                 "outcome": "success" if failed_items == 0 else "partial",
                 "failed_items": failed_items,
                 "queue_counts": queue_counts,
-                "letterboxd_username": self.letterboxd_username,
             },
         )
         return SyncResult(

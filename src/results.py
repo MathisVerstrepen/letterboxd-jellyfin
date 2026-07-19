@@ -25,6 +25,7 @@ def empty_queue_counts() -> dict[str, int]:
 class WatchlistResult:
     tmdb_ids: list[str]
     failed_items: int = 0
+    skipped_items: int = 0
 
 
 @dataclass(frozen=True)

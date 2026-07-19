@@ -2,10 +2,11 @@ import json
 import os
 from typing import Any
 
-from src.logger import setup_logger
+from src.logger import get_logger
 from src.results import StateLoadResult, StateSaveResult
 
 STATE_FILE_PATH = os.getenv("SYNC_STATE_PATH", "sync_state.json")
+logger = get_logger("state")
 
 
 def load_state() -> StateLoadResult:
@@ -22,7 +23,7 @@ def load_state() -> StateLoadResult:
                 raise ValueError("state root is not an object")
             return StateLoadResult(data=data)
     except (json.JSONDecodeError, OSError, ValueError):
-        setup_logger().warning(
+        logger.warning(
             "State could not be loaded; using an empty state",
             extra={"event": "state_load_failed", "stage": "state"},
         )
@@ -36,7 +37,7 @@ def save_state(data: dict[str, Any]) -> StateSaveResult:
             json.dump(data, f, indent=2)
         return StateSaveResult()
     except OSError:
-        setup_logger().error(
+        logger.error(
             "State could not be saved",
             extra={"event": "state_save_failed", "stage": "state"},
         )

@@ -4,7 +4,7 @@ import requests
 
 from requests.exceptions import JSONDecodeError
 from src.exceptions import RadarrException
-from src.logger import setup_logger
+from src.logger import get_logger
 from src.results import MutationResult, RadarrLookupResult
 
 
@@ -29,7 +29,7 @@ class RadarrClient:
         self.base_url = url
         self.headers = {"X-Api-Key": api_key}
         self.timeout = timeout
-        self.logger = setup_logger()
+        self.logger = get_logger("radarr")
 
         self.logger.info(
             "Radarr client initialized",
@@ -151,10 +151,6 @@ class RadarrClient:
                             response.status_code == 400
                             and "has already been added" in response.text
                         ):
-                            self.logger.info(
-                                "Movie is already present in Radarr",
-                                extra={"event": "radarr_queue_result", "outcome": "success", "attempt": attempt + 1},
-                            )
                             succeeded += 1
                             break
                         self.logger.error(
@@ -164,10 +160,6 @@ class RadarrClient:
                         failed_items += 1
                         break
                     else:
-                        self.logger.info(
-                            "Movie admitted to Radarr queue",
-                            extra={"event": "radarr_queue_result", "outcome": "success", "attempt": attempt + 1},
-                        )
                         succeeded += 1
                         break
                 except requests.exceptions.RequestException:

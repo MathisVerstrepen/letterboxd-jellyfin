@@ -1,4 +1,3 @@
-import logging
 import random
 import time
 import threading
@@ -8,8 +7,9 @@ import socket
 from urllib.parse import urlparse
 
 from src.exceptions import RequestException
+from src.logger import get_logger
 
-logger = logging.getLogger("letterboxd-sync")
+logger = get_logger("proxy")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",

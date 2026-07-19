@@ -228,9 +228,28 @@ are detected at the provider's update interval.
 
 ## Structured logs
 
-Runtime stdout is one JSON object per log record. Logs include a stable `event` and
-safe aggregate context, making them suitable for Docker log collection without
-emitting API keys or proxy credentials.
+Runtime stdout contains one compact JSON object per log record. Every record has the following stable fields:
+
+| Field | Presence and type | Meaning |
+| --- | --- | --- |
+| `timestamp` | Required string | UTC ISO-8601 timestamp with milliseconds and a trailing `Z`. |
+| `level` | Required string | Python log level name. |
+| `logger` | Required string | Logger name, normally `letterboxd-sync`. |
+| `event` | Required string | Stable snake-case event identifier; unclassified records use `runtime_log`. |
+| `message` | Required string | Fixed human-readable description. |
+| `component` | Required string | Current owner: `logging`, `service`, `scheduler`, `sync`, `state`, `letterboxd`, `proxy`, `radarr`, `jellyfin`, or `observability`. |
+| `run_id` | Optional UUID4 string | Log-only correlation ID shared by one sync cycle. |
+| `user` | Optional string | Letterboxd username for user-scoped work. |
+
+Event-specific fields are allowlisted. Current operational fields are `stage`, `outcome`, `duration_seconds`, `failed_items`, `queue_counts`, `queue`, `count`, `attempt`, `status_code`, `path`, `host`, `port`, `attempted`, `succeeded`, and `skipped_items`. Unknown extras are omitted. Event names generally follow `<component>_<operation>_<state>`. DEBUG is diagnostic request or batch detail, INFO is lifecycle or successful aggregate completion, WARNING is retryable or partial degradation, and ERROR is an exhausted, rejected, invalid, or unexpected operation.
+
+The UUID log `run_id` is separate from the scheduler's integer cycle sequence. The health and readiness payloads retain that integer as `last_run.run_id`; their contract has not changed. User and run context is inherited by provider work, including Letterboxd detail workers, and is removed when its scope ends.
+
+Successful Radarr queue items are summarized once per user by `radarr_queue_completed` with `attempted`, `succeeded`, `failed_items`, and `outcome`. Letterboxd TV skips are summarized by `letterboxd_scrape_completed` with `count`, `skipped_items`, `failed_items`, and `outcome`. During migration, consumers must also replace the former log-only `letterboxd_username` field with `user`; the per-item `radarr_queue_result` success records and `letterboxd_tv_skipped` records are no longer emitted. Retry and terminal failure events remain available.
+
+Logs must not contain API keys, authorization or cookie values, proxy credentials, full provider or proxy URLs, request or response bodies and headers, Jellyfin usernames, provider/internal IDs, collection IDs, TMDB IDs, titles, or exception messages. The Letterboxd username is the only approved user identity. Fixed messages and the structured-field allowlist are the primary controls. As defense in depth, recognized credential assignments and query parameters (`api_key`/`apikey`, `authorization`, `cookie`, `password`, `token`, and `secret`) and URL user information are replaced with `[REDACTED]`; exception metadata includes only the exception type and traceback file basename, function, and line. Arbitrary opaque secrets cannot be reliably detected, so runtime values must not be placed in messages or unapproved fields.
+
+The production application container uses Docker's `json-file` driver with three `10m` segments, bounding local log retention to roughly 30 MB. This repository does not deploy a collector. External collectors may consume container stdout through their supported Docker integration and should parse each line as one JSON object.
 
 ## Troubleshooting
 

@@ -1,20 +1,22 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from bs4 import BeautifulSoup
 import bs4
-import logging
 from dataclasses import dataclass
 
+from src.logger import get_logger
 from src.proxies import ProxyManager, make_request
 from src.results import WatchlistResult
 
 URL = "https://letterboxd.com/"
-logger = logging.getLogger("letterboxd-sync")
+logger = get_logger("letterboxd")
 
 
 @dataclass(frozen=True)
 class _DetailResult:
     tmdb_id: str | None = None
     failed_items: int = 0
+    skipped_items: int = 0
 
 
 def make_letterboxd_request(
@@ -71,11 +73,7 @@ def extract_tmdb_id_from_endpoint(
         return _DetailResult(failed_items=1)
     try:
         if "/tv/" in tmdb_link_tag["href"]:
-            logger.info(
-                "Skipping identified TV item",
-                extra={"event": "letterboxd_tv_skipped"},
-            )
-            return _DetailResult()
+            return _DetailResult(skipped_items=1)
         tmdb_id = str(tmdb_link_tag["href"]).split("/")[-2]
         if not tmdb_id:
             raise IndexError
@@ -110,19 +108,19 @@ def get_new_watchlist_tmdb_ids(
     page_idx = 1
     logger.info(
         "Starting incremental Letterboxd watchlist scrape",
-        extra={"event": "letterboxd_scrape_started", "letterboxd_username": username},
+        extra={"event": "letterboxd_scrape_started"},
     )
     if latest_synced_tmdb_id:
         logger.info(
             "Incremental scrape will stop at the saved item",
-            extra={"event": "letterboxd_scrape_incremental", "letterboxd_username": username},
+            extra={"event": "letterboxd_scrape_incremental"},
         )
 
     watchlist_page = make_letterboxd_request(f"{username}/watchlist/", proxy_manager)
     if not watchlist_page:
         logger.error(
             "Initial Letterboxd watchlist page could not be fetched",
-            extra={"event": "letterboxd_scrape_failed", "stage": "letterboxd", "letterboxd_username": username},
+            extra={"event": "letterboxd_scrape_failed", "stage": "letterboxd"},
         )
         return WatchlistResult(tmdb_ids=[], failed_items=1)
 
@@ -131,6 +129,7 @@ def get_new_watchlist_tmdb_ids(
     )
     new_tmdb_ids = []
     failed_items = 0
+    skipped_items = 0
     sync_stopped = False
 
     while watchlist_soup is not None and not sync_stopped:
@@ -142,6 +141,7 @@ def get_new_watchlist_tmdb_ids(
             # Submit all movie detail scrapes on the current page to the thread pool
             futures = [
                 executor.submit(
+                    copy_context().run,
                     extract_tmdb_id_from_endpoint,
                     str(frame["data-target-link"][1:]),
                     proxy_manager,
@@ -157,12 +157,13 @@ def get_new_watchlist_tmdb_ids(
                 try:
                     detail_result = future.result()
                     failed_items += detail_result.failed_items
+                    skipped_items += detail_result.skipped_items
                     tmdb_id = detail_result.tmdb_id
                     if tmdb_id:
                         if tmdb_id == latest_synced_tmdb_id:
                             logger.info(
                                 "Found saved item; stopping incremental scrape",
-                                extra={"event": "letterboxd_scrape_boundary_found", "letterboxd_username": username},
+                                extra={"event": "letterboxd_scrape_boundary_found"},
                             )
                             sync_stopped = True
                             break  # Stop processing movies on this page
@@ -183,7 +184,7 @@ def get_new_watchlist_tmdb_ids(
             page_idx += 1
             logger.info(
                 "Fetching another Letterboxd watchlist page",
-                extra={"event": "letterboxd_page_started", "letterboxd_username": username, "count": page_idx},
+                extra={"event": "letterboxd_page_started", "count": page_idx},
             )
             watchlist_page = make_letterboxd_request(
                 str(next_page_link["href"]), proxy_manager
@@ -196,4 +197,8 @@ def get_new_watchlist_tmdb_ids(
         else:
             watchlist_soup = None
 
-    return WatchlistResult(tmdb_ids=new_tmdb_ids, failed_items=failed_items)
+    return WatchlistResult(
+        tmdb_ids=new_tmdb_ids,
+        failed_items=failed_items,
+        skipped_items=skipped_items,
+    )

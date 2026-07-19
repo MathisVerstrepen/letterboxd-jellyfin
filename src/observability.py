@@ -1,6 +1,5 @@
 import copy
 import json
-import logging
 import socket
 import threading
 from http.server import ThreadingHTTPServer
@@ -11,13 +10,17 @@ from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client.exposition import MetricsHandler
 
 from src.results import FAILURE_STAGES, QUEUE_NAMES
+from src.logger import get_logger
+
+
+logger = get_logger("observability")
 
 
 class _OperationalHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, request: Any, client_address: Any) -> None:
-        logging.getLogger("letterboxd-sync").error(
+        logger.error(
             "Operational HTTP request failed",
             extra={"event": "observability_request_failed"},
             exc_info=True,
@@ -30,7 +33,7 @@ class ObservabilityService:
     def __init__(self, host: str, port: int) -> None:
         self.host = host
         self.port = port
-        self.logger = logging.getLogger("letterboxd-sync")
+        self.logger = get_logger("observability")
         self._lock = threading.RLock()
         self._snapshot: dict[str, Any] = {
             "service": "letterboxd-jellyfin",

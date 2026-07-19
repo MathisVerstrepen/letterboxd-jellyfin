@@ -8,7 +8,7 @@ from typing import Any
 from src.config import load_config
 from src.exceptions import ConfigurationError
 from src.jellyfin import Jellyfin
-from src.logger import setup_logger
+from src.logger import get_logger, log_context, new_run_id, setup_logger
 from src.observability import ObservabilityService
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
@@ -25,9 +25,18 @@ def utc_timestamp(value: datetime) -> str:
 def run_sync_cycle(
     config: dict[str, Any],
     observability: ObservabilityService,
-    run_id: int,
+    run_sequence: int,
 ) -> str:
-    logger = setup_logger()
+    with log_context(run_id=new_run_id()):
+        return _run_sync_cycle(config, observability, run_sequence)
+
+
+def _run_sync_cycle(
+    config: dict[str, Any],
+    observability: ObservabilityService,
+    run_sequence: int,
+) -> str:
+    logger = get_logger("scheduler")
     failures = empty_failures()
     queue_counts = empty_queue_counts()
     completed_users = 0
@@ -41,7 +50,7 @@ def run_sync_cycle(
     try:
         logger.info(
             "Sync run started",
-            extra={"event": "sync_run_started", "run_id": run_id},
+            extra={"event": "sync_run_started"},
         )
         state_result = load_state()
         sync_state = state_result.data
@@ -66,7 +75,7 @@ def run_sync_cycle(
             failures["runtime"] += 1
             logger.error(
                 "Sync clients could not be initialized",
-                extra={"event": "sync_client_initialization_failed", "run_id": run_id, "stage": "runtime"},
+                extra={"event": "sync_client_initialization_failed", "stage": "runtime"},
                 exc_info=True,
             )
 
@@ -76,7 +85,7 @@ def run_sync_cycle(
                     failures["configuration"] += 1
                     logger.warning(
                         "Skipping invalid user configuration",
-                        extra={"event": "sync_user_failed", "run_id": run_id, "stage": "configuration"},
+                        extra={"event": "sync_user_failed", "stage": "configuration"},
                     )
                     continue
                 username = user_config.get("letterboxd_username")
@@ -85,33 +94,29 @@ def run_sync_cycle(
                     failures["configuration"] += 1
                     logger.warning(
                         "Skipping user with missing required configuration",
-                        extra={"event": "sync_user_failed", "run_id": run_id, "stage": "configuration"},
+                        extra={"event": "sync_user_failed", "stage": "configuration"},
                     )
                     continue
 
-                try:
-                    manager = SyncManager(
-                        user_config,
-                        jellyfin_client,
-                        radarr_client,
-                        sync_state.get(username),
-                        config.get("letterboxd", {}),
-                        radarr_config,
-                    )
-                    result = manager.run()
-                except Exception:
-                    failures["runtime"] += 1
-                    logger.error(
-                        "Unexpected user sync failure",
-                        extra={
-                            "event": "sync_user_failed",
-                            "run_id": run_id,
-                            "letterboxd_username": username,
-                            "stage": "runtime",
-                        },
-                        exc_info=True,
-                    )
-                    continue
+                with log_context(user=username):
+                    try:
+                        manager = SyncManager(
+                            user_config,
+                            jellyfin_client,
+                            radarr_client,
+                            sync_state.get(username),
+                            config.get("letterboxd", {}),
+                            radarr_config,
+                        )
+                        result = manager.run()
+                    except Exception:
+                        failures["runtime"] += 1
+                        logger.error(
+                            "Unexpected user sync failure",
+                            extra={"event": "sync_user_failed", "stage": "runtime"},
+                            exc_info=True,
+                        )
+                        continue
                 for stage, count in result.failures_by_stage.items():
                     failures[stage] += count
                 for queue, count in result.queue_counts.items():
@@ -130,7 +135,7 @@ def run_sync_cycle(
         failures["runtime"] += 1
         logger.error(
             "Unexpected sync cycle failure",
-            extra={"event": "sync_run_failed", "run_id": run_id, "stage": "runtime"},
+            extra={"event": "sync_run_failed", "stage": "runtime"},
             exc_info=True,
         )
     finally:
@@ -146,7 +151,7 @@ def run_sync_cycle(
             outcome = "success"
         try:
             observability.complete_cycle(
-                run_id=run_id,
+                run_id=run_sequence,
                 outcome=outcome,
                 started_at=started_at,
                 finished_at=finished_at,
@@ -161,7 +166,6 @@ def run_sync_cycle(
             "Sync run completed",
             extra={
                 "event": "sync_run_completed",
-                "run_id": run_id,
                 "outcome": outcome,
                 "duration_seconds": duration,
                 "failed_items": failed_items,
@@ -172,7 +176,8 @@ def run_sync_cycle(
 
 
 def main() -> int:
-    logger = setup_logger("INFO")
+    setup_logger("INFO")
+    logger = get_logger("service")
     try:
         config = load_config()
     except ConfigurationError:
@@ -183,7 +188,7 @@ def main() -> int:
         )
         return 1
 
-    logger = setup_logger(config.get("system", {}).get("log_level", "INFO"))
+    setup_logger(config.get("system", {}).get("log_level", "INFO"))
     host = config.get("observability", {}).get("host", "127.0.0.1")
     port = config.get("observability", {}).get("port", 8000)
     interval_seconds = config.get("system", {}).get("sync_interval", 10) * 60
@@ -228,17 +233,17 @@ def main() -> int:
             extra={"event": "observability_server_started", "host": host, "port": port},
         )
 
-        run_id = 0
+        run_sequence = 0
         while not stop_event.is_set():
-            run_id += 1
-            run_sync_cycle(config, observability, run_id)
+            run_sequence += 1
+            run_sync_cycle(config, observability, run_sequence)
             if stop_event.is_set():
                 break
             observability.set_scheduler_state("sleeping")
             stop_event.wait(interval_seconds)
         return 0
     except Exception:
-        logger.error(
+        get_logger("scheduler").error(
             "Unexpected scheduler failure",
             extra={"event": "scheduler_failed", "stage": "runtime"},
             exc_info=True,

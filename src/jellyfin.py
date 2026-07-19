@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 import requests
-from src.logger import setup_logger
+from src.logger import get_logger
 from src.results import MutationResult, PlayedMoviesResult
 
 root_path = Path(__file__).parent.parent
@@ -19,7 +19,7 @@ class Jellyfin:
             "Authorization": f'MediaBrowser Token="{api_key}"',
         }
         self._movie_cache: dict[tuple[str, int], str] | None = None
-        self.logger = setup_logger()
+        self.logger = get_logger("jellyfin")
 
         # Test connection on initialization
         self._test_connection()

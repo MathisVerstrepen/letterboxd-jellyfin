@@ -33,7 +33,7 @@ Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The se
 The service runs one cycle immediately after startup. Each cycle performs the following work for every configured user:
 
 1.  **Fetch New Movies**: It scrapes the user's Letterboxd watchlist. When saved state exists, it stops at the previously saved Letterboxd entry and processes only newer entries. A failed or incomplete scrape is distinguished from a successful no-change result and does not advance the discovery cursor.
-2.  **Process with Radarr**: For each newly discovered movie, it checks Radarr and requests that the movie be added/monitored using the configured folder and quality profile. Failed Letterboxd detail and Radarr operations remain pending for a later cycle.
+2.  **Process with Radarr**: The first dependent lookup in a cycle loads Radarr's installed-movie inventory once. Installed movies are resolved from that snapshot; each distinct TMDB ID missing from it uses at most one detail lookup during the cycle. The service still requests that each eligible user movie be added/monitored using the configured folder and quality profile. Failed Letterboxd detail and Radarr operations remain pending for a later cycle.
 3.  **Update Jellyfin**:
     -   For each newly discovered movie that already has a Radarr file, it looks for the movie in Jellyfin and adds it to the configured collection. Failed Jellyfin operations remain pending without repeating a completed Radarr stage.
     -   It checks the collection for movies watched by the configured Jellyfin user and removes them.
@@ -41,7 +41,7 @@ The service runs one cycle immediately after startup. Each cycle performs the fo
 
 > **Current limitation:** After a successful Radarr queue attempt reports that a movie has no file, that movie is not revisited automatically when its download later completes. Jellyfin collection addition is attempted only when Radarr reports that it already has a file during the successful queue attempt. Add later downloads to Jellyfin manually if needed.
 
-After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial.
+After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial. One proxy manager and the Radarr and Jellyfin inventory caches are shared by all users in that cycle. These snapshots can be stale after a service changes mid-cycle and are discarded before the next cycle; mutable per-user collection and watched-item responses are not cached.
 
 ```mermaid
 sequenceDiagram
@@ -163,7 +163,7 @@ letterboxd:
   # Optional: Define proxies directly in this list. Ignored if proxy_file is set.
   proxies: []
 
-  # Test configured proxies and remove unreachable entries when a user sync starts.
+  # Test configured proxies and remove unreachable entries once when a cycle starts.
   validate_proxies_on_startup: true
   # Retry directly if a request through a loaded proxy fails.
   allow_direct_fallback: true
@@ -177,7 +177,7 @@ users:
     jellyfin_collection_id: ""
 ```
 
-`proxy_file` takes priority over `proxies`. If the configured file is missing or no usable proxies remain, the service logs the condition and uses direct requests. `allow_direct_fallback` specifically controls whether a failed request through a loaded proxy is retried without one.
+`proxy_file` takes priority over `proxies`. If the configured file is missing or no usable proxies remain, the service logs the condition and uses direct requests. Proxy loading, validation, and rotation state are shared across all users in one cycle and rebuilt for the next cycle. `allow_direct_fallback` specifically controls whether a failed request through a loaded proxy is retried without one.
 
 Configuration is loaded once at process startup. Restart the container after changing any setting:
 
@@ -187,11 +187,11 @@ docker compose restart letterboxd-sync
 
 A restart triggers a cycle immediately. SQLite state is retained at `/app/data/sync_state.db` by production Compose, so normal restarts remain incremental and retry pending movie stages. `SYNC_STATE_DB_PATH` selects the authoritative SQLite database. `SYNC_STATE_PATH` selects only the legacy JSON import source. If `SYNC_STATE_DB_PATH` is unset, the database is derived beside the JSON source by replacing a final `.json` suffix with `.db`, or by appending `.db` otherwise.
 
-When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. Once a database exists it always takes precedence: a corrupt, foreign, or unsupported database stops the cycle rather than falling back to potentially stale JSON. New databases are created with mode `0600` where the platform supports it; existing file ownership and permissions are left unchanged.
+When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. An exact application schema-version-1 SQLite database is upgraded transactionally to schema version 2 by adding the pending-status lookup index; rows and existing indexes are retained. Completed movie history remains durable in SQLite and prevents rediscovery from repeating remote work, but only the five pending/retry statuses are hydrated into each user's active work map. Once a database exists it always takes precedence: a corrupt, foreign, or unsupported database stops the cycle rather than falling back to potentially stale JSON. New databases are created with mode `0600` where the platform supports it; existing file ownership and permissions are left unchanged.
 
 Before upgrading, stop the service and back up both `sync_state.json` and any existing `sync_state.db` using your normal filesystem backup process. To restore SQLite state, stop the service and replace the database with a known-good database created by this application. Do not delete an invalid database expecting automatic JSON recovery: move or replace it deliberately after preserving it for diagnosis. Deleting the database while leaving the retained JSON causes the next start to import that now-stale pre-migration snapshot again and may repeat remote work.
 
-Downgrading to a JSON-only release is not lossless. The retained JSON contains none of the checkpoints committed after SQLite migration. Stop the service, restore or select the retained JSON for the older release, and expect that work completed since migration can be retried. SQLite checkpoints provide transactional local persistence, but a remote operation that succeeds immediately before a checkpoint failure remains at-least-once and can also be repeated.
+Code that accepts only SQLite schema version 1 rejects a database after its automatic version-2 upgrade. To downgrade to that code, stop the service and restore the pre-upgrade version-1 database backup; do not only decrement `user_version`, because the version-2 index will still fail exact schema validation. Downgrading to a JSON-only release is also not lossless. The retained JSON contains none of the checkpoints committed after SQLite migration. Stop the service, restore or select the retained JSON for the older release, and expect that work completed since migration can be retried. SQLite checkpoints provide transactional local persistence, but a remote operation that succeeds immediately before a checkpoint failure remains at-least-once and can also be repeated.
 
 ## Health and observability
 

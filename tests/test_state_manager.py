@@ -6,6 +6,7 @@ import pytest
 
 from src.state_manager import (
     APPLICATION_ID,
+    SCHEMA_V1_SQL,
     SCHEMA_VERSION,
     MovieStateChange,
     SQLiteStateStore,
@@ -45,6 +46,28 @@ def store_for(tmp_path, *, json_name="state.json", db_name="state.db"):
     return SQLiteStateStore(str(tmp_path / db_name), str(tmp_path / json_name))
 
 
+def build_v1_database(path):
+    with sqlite3.connect(path, isolation_level=None) as connection:
+        connection.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_V1_SQL}")
+        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute(
+            """
+            INSERT INTO users (username, cursor_kind, cursor_value)
+            VALUES ('alice', 'letterboxd', 'film/example/')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO movies (
+                username, endpoint, tmdb_id, status, title, year, completion_reason
+            ) VALUES ('alice', 'film/example/', '123', 'completed',
+                      'Example', 2024, 'jellyfin_added')
+            """
+        )
+        connection.execute("COMMIT")
+
+
 def test_database_path_derivation():
     assert _derive_db_path("sync_state.json") == "sync_state.db"
     assert _derive_db_path("state") == "state.db"
@@ -66,6 +89,59 @@ def test_empty_database_initializes_with_exact_metadata_and_permissions(tmp_path
         assert [
             row[1] for row in connection.execute("PRAGMA index_list(movies)")
         ].count("movies_username_movie_id_idx") == 1
+        assert [
+            row[1] for row in connection.execute("PRAGMA index_list(movies)")
+        ].count("movies_username_status_movie_id_idx") == 1
+
+
+def test_exact_v1_database_migrates_to_v2_and_preserves_completed_data(tmp_path):
+    path = tmp_path / "state.db"
+    build_v1_database(path)
+
+    store = store_for(tmp_path)
+    result = store.initialize()
+
+    assert (result.failed_items, result.migrated) == (0, True)
+    assert store.load_or_create_user("alice").data == {
+        "cursor": {"kind": "letterboxd", "value": "film/example/"},
+        "movies": {},
+    }
+    assert store.get_completed_endpoints(
+        "alice", ("film/example/",)
+    ).endpoints == frozenset({"film/example/"})
+    store.close()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM movies WHERE status = 'completed'"
+        ).fetchone() == (1,)
+        assert [
+            row[2]
+            for row in connection.execute(
+                'PRAGMA index_info("movies_username_status_movie_id_idx")'
+            )
+        ] == ["username", "status", "movie_id"]
+
+
+def test_v1_migration_verification_failure_rolls_back_metadata(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    build_v1_database(path)
+    original_verify = SQLiteStateStore._verify_schema
+
+    def fail_v2(connection, *, version):
+        if version == 2:
+            raise sqlite3.DatabaseError("injected verification failure")
+        return original_verify(connection, version=version)
+
+    monkeypatch.setattr(SQLiteStateStore, "_verify_schema", staticmethod(fail_v2))
+    assert store_for(tmp_path).initialize().failed_items == 1
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert "movies_username_status_movie_id_idx" not in {
+            row[1] for row in connection.execute("PRAGMA index_list(movies)")
+        }
+        assert connection.execute("SELECT COUNT(*) FROM movies").fetchone() == (1,)
 
 
 @pytest.mark.parametrize(
@@ -88,7 +164,10 @@ def test_json_import_is_one_time_and_preserves_source(tmp_path, source, expected
         loaded = store.load_or_create_user("alice").data
         assert loaded["cursor"] == expected_cursor
         if source.get("version") == 2:
-            assert list(loaded["movies"]) == ["film/first/", "film/example/"]
+            assert list(loaded["movies"]) == ["film/first/"]
+            assert store.get_completed_endpoints(
+                "alice", ("film/example/",)
+            ).endpoints == frozenset({"film/example/"})
     assert store.close().failed_items == 0
     assert source_path.read_bytes() == original
 
@@ -185,7 +264,45 @@ def test_every_valid_movie_status_round_trips(tmp_path, movie):
         movie_changes=(MovieStateChange("upsert", "film/a/", movie),)
     )
     assert store.checkpoint_user("alice", checkpoint).failed_items == 0
-    assert store.load_or_create_user("alice").data["movies"]["film/a/"] == movie
+    loaded = store.load_or_create_user("alice").data["movies"]
+    if movie["status"] == "completed":
+        assert loaded == {}
+        assert store.get_completed_endpoints(
+            "alice", ("film/a/",)
+        ).endpoints == frozenset({"film/a/"})
+    else:
+        assert loaded["film/a/"] == movie
+    store.close()
+
+
+def test_completed_endpoint_lookup_deduplicates_and_batches(tmp_path):
+    store = store_for(tmp_path)
+    store.initialize()
+    store.load_or_create_user("alice")
+    for endpoint in ("film/a/", "film/z/"):
+        assert store.checkpoint_user(
+            "alice",
+            StateCheckpoint(
+                movie_changes=(
+                    MovieStateChange(
+                        "upsert",
+                        endpoint,
+                        record("completed", "1", reason="radarr_no_file"),
+                    ),
+                )
+            ),
+        ).failed_items == 0
+    statements = []
+    store._connection.set_trace_callback(statements.append)
+    candidates = tuple(["film/a/", "film/a/"] + [f"film/{i}/" for i in range(500)])
+    candidates += ("film/z/",)
+
+    result = store.get_completed_endpoints("alice", candidates)
+
+    assert result.endpoints == frozenset({"film/a/", "film/z/"})
+    assert len(
+        [statement for statement in statements if "SELECT endpoint FROM movies" in statement]
+    ) == 2
     store.close()
 
 

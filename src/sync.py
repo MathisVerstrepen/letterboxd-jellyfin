@@ -9,7 +9,13 @@ from src.letterboxd import (
 from src.logger import get_logger
 from src.proxies import ProxyManager
 from src.radarr import RadarrClient
-from src.results import StateSaveResult, SyncResult, empty_failures, empty_queue_counts
+from src.results import (
+    CompletedEndpointsResult,
+    StateSaveResult,
+    SyncResult,
+    empty_failures,
+    empty_queue_counts,
+)
 from src.state_manager import MovieStateChange, StateCheckpoint
 
 
@@ -39,6 +45,11 @@ class SyncManager:
         checkpoint: Callable[[StateCheckpoint], StateSaveResult],
         letterboxd_config: dict[str, Any],
         radarr_config: dict[str, Any],
+        *,
+        proxy_manager: ProxyManager,
+        completed_endpoint_lookup: Callable[
+            [tuple[str, ...]], CompletedEndpointsResult
+        ],
     ) -> None:
         self.letterboxd_username = user_config["letterboxd_username"]
         self.jellyfin_collection_id = user_config.get("jellyfin_collection_id")
@@ -49,7 +60,8 @@ class SyncManager:
         self.radarr = radarr
         self.radarr_config = radarr_config
         self.max_workers = letterboxd_config.get("max_concurrent_requests", 5)
-        self.proxy_manager = ProxyManager(letterboxd_config)
+        self.proxy_manager = proxy_manager
+        self.completed_endpoint_lookup = completed_endpoint_lookup
         self.logger = get_logger("sync")
 
     def _checkpoint(
@@ -68,7 +80,9 @@ class SyncManager:
             )
         return None
 
-    def _merge_discovery(self, watchlist) -> StateCheckpoint | None:
+    def _merge_discovery(
+        self, watchlist, completed_endpoints: frozenset[str]
+    ) -> StateCheckpoint | None:
         movie_changes = []
         movies = self.user_state["movies"]
         cursor = self.user_state["cursor"]
@@ -82,6 +96,8 @@ class SyncManager:
                 )
 
         for entry in watchlist.entries:
+            if entry.endpoint in completed_endpoints:
+                continue
             existing = movies.get(entry.endpoint)
             if existing is None:
                 if entry.detail.outcome == "movie":
@@ -343,7 +359,29 @@ class SyncManager:
                     "outcome": watchlist.outcome,
                 },
             )
-            discovery_checkpoint = self._merge_discovery(watchlist)
+            completed_endpoints = frozenset()
+            if watchlist.entries:
+                pending_endpoints = self.user_state["movies"]
+                candidates = tuple(
+                    dict.fromkeys(
+                        entry.endpoint
+                        for entry in watchlist.entries
+                        if entry.endpoint not in pending_endpoints
+                    )
+                )
+                if candidates:
+                    completed_lookup = self.completed_endpoint_lookup(candidates)
+                    failures["state"] += completed_lookup.failed_items
+                    if completed_lookup.failed_items:
+                        return SyncResult(
+                            completed=False,
+                            failures_by_stage=failures,
+                            queue_counts=queue_counts,
+                        )
+                    completed_endpoints = completed_lookup.endpoints
+            discovery_checkpoint = self._merge_discovery(
+                watchlist, completed_endpoints
+            )
             if discovery_checkpoint:
                 stopped = self._checkpoint(
                     discovery_checkpoint, failures, queue_counts

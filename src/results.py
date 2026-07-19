@@ -78,6 +78,12 @@ class StateInitializationResult:
 
 
 @dataclass(frozen=True)
+class CompletedEndpointsResult:
+    endpoints: frozenset[str] = frozenset()
+    failed_items: int = 0
+
+
+@dataclass(frozen=True)
 class StateSaveResult:
     failed_items: int = 0
 

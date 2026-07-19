@@ -13,6 +13,7 @@ def client_without_connection():
     client.base_url = "http://jellyfin.invalid"
     client.headers = {"Authorization": 'MediaBrowser Token="fake-key"'}
     client._movie_cache = None
+    client._movie_cache_error = None
     client.logger = Mock()
     return client
 
@@ -68,6 +69,20 @@ def test_movie_loading_http_failure(response_factory, monkeypatch):
     )
     with pytest.raises(JellyfinException):
         client_without_connection().get_movies()
+
+
+def test_movie_cache_failure_is_shared_for_later_lookups(response_factory, monkeypatch):
+    get = Mock(return_value=response_factory(status_code=503))
+    monkeypatch.setattr(jellyfin.requests, "get", get)
+    client = client_without_connection()
+
+    with pytest.raises(JellyfinException):
+        client.get_movie_id("Movie", 2020)
+    with pytest.raises(JellyfinException):
+        client.get_movie_id("Another", 2021)
+
+    assert get.call_count == 1
+    assert client._movie_cache is None
 
 
 def test_add_collection_empty_does_not_request(monkeypatch):

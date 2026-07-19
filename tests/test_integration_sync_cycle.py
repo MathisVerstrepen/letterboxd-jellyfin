@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 import main
+import src.radarr as radarr_module
 import src.state_manager as state_manager
 import src.sync as sync
 from src.observability import ObservabilityService
@@ -111,6 +112,17 @@ def load_user(database, source, username="alice"):
     return result.data
 
 
+def load_movie_row(database, username="alice", endpoint="film/new/"):
+    with state_manager.sqlite3.connect(database) as connection:
+        return connection.execute(
+            """
+            SELECT status, completion_reason FROM movies
+            WHERE username = ? AND endpoint = ?
+            """,
+            (username, endpoint),
+        ).fetchone()
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("legacy", [{"alice": "old"}, {"version": 2, "users": {}}])
 def test_json_migration_and_completed_state_persist(tmp_path, monkeypatch, legacy):
@@ -132,8 +144,18 @@ def test_json_migration_and_completed_state_persist(tmp_path, monkeypatch, legac
     persisted = load_user(database, source)
     assert outcome == "success"
     assert persisted["cursor"] == {"kind": "letterboxd", "value": "film/new/"}
-    assert persisted["movies"]["film/new/"]["completion_reason"] == "jellyfin_added"
+    assert persisted["movies"] == {}
+    assert load_movie_row(database) == ("completed", "jellyfin_added")
     assert source.read_text(encoding="utf-8") == original
+    assert radarr.check_radarr_state.call_count == 1
+    assert jellyfin.add_to_collection.call_count == 1
+
+    second_outcome = main.run_sync_cycle(
+        config_for(user()), ObservabilityService("127.0.0.1", 0), 2
+    )
+    assert second_outcome == "success"
+    assert load_user(database, source)["movies"] == {}
+    assert load_movie_row(database) == ("completed", "jellyfin_added")
     assert radarr.check_radarr_state.call_count == 1
     assert jellyfin.add_to_collection.call_count == 1
 
@@ -155,10 +177,8 @@ def test_radarr_failure_retries_after_connection_reopen(tmp_path, monkeypatch):
     assert main.run_sync_cycle(config_for(user()), observability, 1) == "partial"
     assert load_user(database, source)["movies"]["film/new/"]["status"] == "retry_radarr"
     assert main.run_sync_cycle(config_for(user()), observability, 2) == "success"
-    assert (
-        load_user(database, source)["movies"]["film/new/"]["completion_reason"]
-        == "jellyfin_added"
-    )
+    assert load_user(database, source)["movies"] == {}
+    assert load_movie_row(database) == ("completed", "jellyfin_added")
     assert radarr.check_radarr_state.call_count == 2
 
 
@@ -181,7 +201,8 @@ def test_jellyfin_failure_retries_without_repeating_radarr(tmp_path, monkeypatch
     assert main.run_sync_cycle(config_for(user()), observability, 1) == "partial"
     assert main.run_sync_cycle(config_for(user()), observability, 2) == "success"
     persisted = load_user(database, source)
-    assert persisted["movies"]["film/new/"]["completion_reason"] == "jellyfin_added"
+    assert persisted["movies"] == {}
+    assert load_movie_row(database) == ("completed", "jellyfin_added")
     assert radarr.check_radarr_state.call_count == 1
     assert jellyfin.add_to_collection.call_count == 2
 
@@ -217,7 +238,8 @@ def test_partial_pagination_processes_entry_without_cursor_advance(tmp_path, mon
     persisted = load_user(database, source)
     assert outcome == "partial"
     assert persisted["cursor"]["value"] == "film/old/"
-    assert "film/new/" in persisted["movies"]
+    assert persisted["movies"] == {}
+    assert load_movie_row(database) == ("completed", "jellyfin_added")
 
 
 @pytest.mark.integration
@@ -298,3 +320,68 @@ def test_close_failure_marks_cycle_failed(tmp_path, monkeypatch):
         config_for(user()), ObservabilityService("127.0.0.1", 0), 1
     )
     assert outcome == "failed"
+
+
+@pytest.mark.integration
+def test_multi_user_cycle_shares_proxy_and_radarr_lookup_cache(
+    tmp_path, monkeypatch, response_factory
+):
+    use_state_paths(tmp_path, monkeypatch)
+    jellyfin = Mock()
+    jellyfin.get_movie_id.return_value = "jf-id"
+    jellyfin.add_to_collection.return_value = MutationResult(attempted=1, succeeded=1)
+    jellyfin.get_user_id.return_value = "user-id"
+    jellyfin.get_played_movies_from_collection.return_value = PlayedMoviesResult([])
+    jellyfin.remove_from_collection.return_value = MutationResult()
+    monkeypatch.setattr(main, "Jellyfin", Mock(return_value=jellyfin))
+
+    radarr = radarr_module.RadarrClient.__new__(radarr_module.RadarrClient)
+    radarr.base_url = "http://radarr.invalid/api/v3"
+    radarr.headers = {"X-Api-Key": "fake-key"}
+    radarr.timeout = 12
+    radarr.logger = Mock()
+    radarr._inventory_loaded = False
+    radarr._inventory_available = False
+    radarr._inventory = {}
+    radarr._detail_cache = {}
+    radarr.add_to_radarr_download_queue = Mock(
+        return_value=MutationResult(attempted=1, succeeded=1)
+    )
+    monkeypatch.setattr(main, "RadarrClient", Mock(return_value=radarr))
+    get = Mock(
+        side_effect=[
+            response_factory(
+                headers={"Content-Type": "application/json"}, json_data=[]
+            ),
+            response_factory(
+                headers={"Content-Type": "application/json"},
+                json_data=[
+                    {
+                        "title": "Movie",
+                        "tmdbId": 101,
+                        "year": 2020,
+                        "movieFile": {"id": 1},
+                    }
+                ],
+            ),
+        ]
+    )
+    monkeypatch.setattr(radarr_module.requests, "get", get)
+    proxy = Mock()
+    proxy_constructor = Mock(return_value=proxy)
+    monkeypatch.setattr(main, "ProxyManager", proxy_constructor)
+    entry = WatchlistEntry("film/new/", LetterboxdDetailResult("movie", "101"))
+    scrape_mock = Mock(return_value=scrape([entry]))
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape_mock)
+
+    outcome = main.run_sync_cycle(
+        config_for(user("alice"), user("bob")),
+        ObservabilityService("127.0.0.1", 0),
+        1,
+    )
+
+    assert outcome == "success"
+    proxy_constructor.assert_called_once_with(config_for()["letterboxd"])
+    assert all(call.args[1] is proxy for call in scrape_mock.call_args_list)
+    assert get.call_count == 2
+    assert radarr.add_to_radarr_download_queue.call_count == 2

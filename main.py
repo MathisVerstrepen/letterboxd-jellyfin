@@ -10,6 +10,7 @@ from src.exceptions import ConfigurationError
 from src.jellyfin import Jellyfin
 from src.logger import get_logger, log_context, new_run_id, setup_logger
 from src.observability import ObservabilityService
+from src.proxies import ProxyManager
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
 from src.state_manager import SQLiteStateStore, StateCheckpoint
@@ -70,6 +71,7 @@ def _run_sync_cycle(
                     api_key=radarr_config["api_key"],
                     timeout=radarr_config.get("timeout", 60),
                 )
+                proxy_manager = ProxyManager(config.get("letterboxd", {}))
                 clients_ready = True
             except Exception:
                 failures["runtime"] += 1
@@ -114,6 +116,11 @@ def _run_sync_cycle(
                         ) -> Any:
                             return store.checkpoint_user(_username, delta)
 
+                        def completed_endpoint_lookup(
+                            endpoints: tuple[str, ...], _username: str = username
+                        ) -> Any:
+                            return store.get_completed_endpoints(_username, endpoints)
+
                         manager = SyncManager(
                             user_config,
                             jellyfin_client,
@@ -122,6 +129,8 @@ def _run_sync_cycle(
                             checkpoint,
                             config.get("letterboxd", {}),
                             radarr_config,
+                            proxy_manager=proxy_manager,
+                            completed_endpoint_lookup=completed_endpoint_lookup,
                         )
                         result = manager.run()
                     except Exception:

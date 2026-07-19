@@ -19,6 +19,7 @@ class Jellyfin:
             "Authorization": f'MediaBrowser Token="{api_key}"',
         }
         self._movie_cache: dict[tuple[str, int], str] | None = None
+        self._movie_cache_error: Exception | None = None
         self.logger = get_logger("jellyfin")
 
         # Test connection on initialization
@@ -42,11 +43,18 @@ class Jellyfin:
         This is called once per sync instead of on every lookup.
         """
         if self._movie_cache is None:
-            self._movie_cache = {}
-            all_movies_response = self.get_movies()
-            for movie in all_movies_response.get("Items", []):
-                key = (movie.get("Name"), movie.get("ProductionYear"))
-                self._movie_cache[key] = movie.get("Id")
+            if self._movie_cache_error is not None:
+                raise self._movie_cache_error
+            try:
+                all_movies_response = self.get_movies()
+                movie_cache = {}
+                for movie in all_movies_response.get("Items", []):
+                    key = (movie.get("Name"), movie.get("ProductionYear"))
+                    movie_cache[key] = movie.get("Id")
+            except Exception as error:
+                self._movie_cache_error = error
+                raise
+            self._movie_cache = movie_cache
         return self._movie_cache
 
     def get_movie_id(self, movie_name: str, movie_year: int) -> str | None:

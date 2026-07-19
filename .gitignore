@@ -11,3 +11,7 @@ sync_state.json
 
 # Dev environment
 dev-environment
+.agents/
+.codebase-memory/
+.cbmignore
+AGENTS.md

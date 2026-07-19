@@ -4,3 +4,4 @@ python-dotenv
 discord.py
 pytz
 PyYAML
+prometheus-client

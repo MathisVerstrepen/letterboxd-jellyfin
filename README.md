@@ -16,6 +16,7 @@ Automatically sync your Letterboxd watchlist with Jellyfin and Radarr. This scri
     -   Automatically removes movies from the collection after they have been watched by the user in Jellyfin.
 -   **Robust Scraping**: Built-in support for proxies (HTTP/SOCKS5) to ensure reliable and uninterrupted scraping of Letterboxd.
 -   **Easy Deployment**: Packaged as a Docker container for a simple "clone, configure, and run" setup.
+-   **Health and Observability**: Structured JSON logs, health/readiness status, and Prometheus metrics are available from an embedded operational HTTP server.
 
 ![Splitter-1](https://raw.githubusercontent.com/MathisVerstrepen/github-visual-assets/main/splitter/splitter-1.png)
 
@@ -35,7 +36,7 @@ The entire process is automated and runs on a schedule you define.
 ```mermaid
 %%{ init : { "theme" : "default" }}%%
 sequenceDiagram
-    participant Scheduler as "entrypoint.sh"
+    participant Scheduler as "main.py scheduler"
     participant Main as "main.py"
     participant SyncManager as "SyncManager"
     participant Letterboxd as "letterboxd.py"
@@ -43,7 +44,7 @@ sequenceDiagram
     participant Jellyfin as "jellyfin.py"
     participant State as "state_manager.py"
 
-    Scheduler->>Main: Runs script on a loop
+    Scheduler->>Main: Runs immediately, then waits after each completed cycle
 
     Main->>State: load_state()
     State-->>Main: last_synced_ids
@@ -155,6 +156,10 @@ system:
   sync_interval: 10       # How often to run the sync process, in minutes.
   log_level: INFO         # Log level: DEBUG, INFO, WARNING, ERROR
 
+observability:
+  host: "127.0.0.1"       # Host-local by default.
+  port: 8000              # Embedded health and metrics listener.
+
 # --- Service Connections ---
 jellyfin:
   url: "http://jellyfin:8096"   # URL to your Jellyfin instance
@@ -189,6 +194,61 @@ users:
     jellyfin_collection_id: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
+Configuration is loaded once at process startup. Restart the service/container after
+changing any setting. The service performs an initial sync immediately. Subsequent
+cycles are serial and begin only after the previous cycle has completed and the full
+`sync_interval` has elapsed.
+
+## Health and observability
+
+The embedded listener exposes three fixed, unauthenticated `GET` routes:
+
+- `GET /health` is process liveness. It returns HTTP 200 while the scheduler is
+  running or sleeping, regardless of external service failures, and 503 during
+  orderly shutdown. Docker probes this route, so a Radarr, Jellyfin, or Letterboxd
+  outage does not create a container restart loop.
+- `GET /ready` returns 503 until a cycle succeeds. It returns 200 only when the most
+  recently completed cycle succeeded; a later partial or failed cycle changes it
+  back to 503. A cycle currently in progress retains the previous completed result.
+- `GET /metrics` returns Prometheus exposition data.
+
+`/health` and `/ready` return the same aggregate JSON document. It includes liveness,
+readiness, scheduler state, the latest successful completion timestamp, and the last
+cycle's outcome, duration, failed-item counts by fixed stage, and queue counts. It
+does not include movie titles/IDs, usernames, URLs, credentials, or error text.
+Before the first completed cycle, `last_run` and `last_successful_run` are `null`.
+Status and counters are process-local and reset after restart.
+
+The default `127.0.0.1:8000` bind is intentionally host-local. Production Compose
+uses host networking, so query it on the Docker host, for example
+`http://127.0.0.1:8000/health`. To permit a remote Prometheus server to connect, set
+`observability.host` to `0.0.0.0` and secure access at the host/network boundary;
+these endpoints do not provide authentication or TLS. No Compose port mapping is
+needed with host networking.
+
+Prometheus exports these fixed-cardinality series:
+
+| Metric | Type and fixed labels | Meaning and initial value |
+|---|---|---|
+| `letterboxd_jellyfin_sync_runs_total` | Counter; `outcome` is exactly `success`, `partial`, or `failed` | Completed cycles since process start. Every outcome series exists at `0` before the first cycle completes. |
+| `letterboxd_jellyfin_sync_run_duration_seconds` | Histogram without labels; buckets are `1`, `5`, `15`, `30`, `60`, `120`, `300`, `600`, `1800`, `3600`, and `+Inf` seconds | Distribution of completed cycle durations; its count and sum begin at `0`. |
+| `letterboxd_jellyfin_sync_last_run_timestamp_seconds` | Gauge without labels | Unix completion time of the latest cycle; `0` before a cycle completes. |
+| `letterboxd_jellyfin_sync_last_success_timestamp_seconds` | Gauge without labels | Unix completion time of the latest successful cycle; `0` until the first success. |
+| `letterboxd_jellyfin_sync_last_run_duration_seconds` | Gauge without labels | Duration of the latest completed cycle in seconds; initially `0`. |
+| `letterboxd_jellyfin_sync_last_run_failed_items` | Gauge without labels | Failed work units in the latest completed cycle; initially `0`. |
+| `letterboxd_jellyfin_sync_failed_items_total` | Counter; `stage` is exactly `configuration`, `letterboxd`, `radarr`, `jellyfin`, `state`, or `runtime` | Failed work units since process start. Every stage series exists at `0` initially. |
+| `letterboxd_jellyfin_sync_last_run_queue_items` | Gauge; `queue` is exactly `radarr_add`, `jellyfin_add`, or `jellyfin_remove` | Local work admitted by the latest completed cycle for that queue; every queue series is initially `0`. |
+| `letterboxd_jellyfin_sync_in_progress` | Gauge without labels | `1` while a sync cycle is running and `0` otherwise; initially `0`. |
+| `letterboxd_jellyfin_ready` | Gauge without labels | The same readiness boolean used by `/ready`: `1` only when the latest completed cycle succeeded, otherwise `0`; initially `0`. |
+
+The `radarr_add`, `jellyfin_add`, and `jellyfin_remove` queue values count local work
+admitted by the latest cycle. They are not retry counts, successful-operation counts,
+or Radarr's remote queue depth.
+
+Runtime stdout is one JSON object per log record. Logs include a stable `event` and
+safe aggregate context, making them suitable for Docker log collection without
+emitting API keys or proxy credentials.
+
 ## Troubleshooting
 
 -   **How do I view the logs?**
@@ -196,6 +256,18 @@ users:
     ```bash
     docker logs -f letterboxd-sync
     ```
+    Each line is a structured JSON log object. Configuration changes do not reload
+    dynamically; restart the container after editing `config.yaml`.
+
+-   **Why is the container healthy while `/ready` is 503?**
+    Health reports that the scheduler and embedded HTTP service are alive. Readiness
+    reports whether the latest completed synchronization cycle succeeded. Inspect
+    `/ready`, `/metrics`, and the structured logs for the failed stage.
+
+-   **Why can a remote Prometheus server not connect?**
+    The default listener is loopback-only. Explicitly bind `0.0.0.0` only if needed,
+    then restrict port 8000 with host firewall/network policy because the operational
+    endpoints are unauthenticated.
 
 -   **Connection Refused Errors:**
     If the logs show errors connecting to Radarr or Jellyfin, ensure the `url` in your `config.yaml` is correct and accessible from where you are running Docker. If Radarr/Jellyfin are also in Docker, use their container names (e.g., `http://radarr:7878`).

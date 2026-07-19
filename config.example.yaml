@@ -4,8 +4,13 @@ system:
   sync_interval: 10
   # Log level: DEBUG, INFO, WARNING, ERROR
   log_level: INFO
-  # Optional: Path to log file inside the container (e.g., /config/app.log)
-  log_file: 
+
+# Operational HTTP endpoints. Changes require a service/container restart.
+observability:
+  # Loopback is safest with the production host-network configuration.
+  # Set to "0.0.0.0" only when remote health/Prometheus access is required.
+  host: "127.0.0.1"
+  port: 8000
 
 # --- Service Connections ---
 jellyfin:

@@ -11,4 +11,7 @@ COPY ./entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh
 
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["python3", "-m", "src.healthcheck"]
+
 ENTRYPOINT ["/app/entrypoint.sh"]

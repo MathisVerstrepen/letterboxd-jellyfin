@@ -32,14 +32,14 @@ Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The se
 
 The service runs one cycle immediately after startup. Each cycle performs the following work for every configured user:
 
-1.  **Fetch New Movies**: It scrapes the user's Letterboxd watchlist. When saved state exists, it stops at the previously saved movie and processes only newer entries. With no saved state, the first run processes the full watchlist.
-2.  **Process with Radarr**: For each newly discovered movie, it checks Radarr and requests that the movie be added/monitored using the configured folder and quality profile.
+1.  **Fetch New Movies**: It scrapes the user's Letterboxd watchlist. When saved state exists, it stops at the previously saved Letterboxd entry and processes only newer entries. A failed or incomplete scrape is distinguished from a successful no-change result and does not advance the discovery cursor.
+2.  **Process with Radarr**: For each newly discovered movie, it checks Radarr and requests that the movie be added/monitored using the configured folder and quality profile. Failed Letterboxd detail and Radarr operations remain pending for a later cycle.
 3.  **Update Jellyfin**:
-    -   For each newly discovered movie that already has a Radarr file, it looks for the movie in Jellyfin and adds it to the configured collection.
+    -   For each newly discovered movie that already has a Radarr file, it looks for the movie in Jellyfin and adds it to the configured collection. Failed Jellyfin operations remain pending without repeating a completed Radarr stage.
     -   It checks the collection for movies watched by the configured Jellyfin user and removes them.
-4.  **Save State**: After all users have been processed, it saves each user's newest discovered TMDB ID once for the cycle.
+4.  **Checkpoint State**: It transactionally checkpoints the Letterboxd cursor and each changed movie's processing status in SQLite after discovery and every successful or retryable stage transition.
 
-> **Current limitation:** A movie newly queued in Radarr is not revisited automatically after its download completes. Jellyfin collection addition is attempted only while that movie is first processed as a new Letterboxd entry, and only if Radarr reports that it already has a file at that time. Add later downloads to Jellyfin manually if needed.
+> **Current limitation:** After a successful Radarr queue attempt reports that a movie has no file, that movie is not revisited automatically when its download later completes. Jellyfin collection addition is attempted only when Radarr reports that it already has a file during the successful queue attempt. Add later downloads to Jellyfin manually if needed.
 
 After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial.
 
@@ -54,13 +54,13 @@ sequenceDiagram
     participant State as "state_manager.py"
 
     Scheduler->>Main: Start cycle immediately
-    Main->>State: Load saved IDs
-    State-->>Main: Per-user sync boundaries
+    Main->>State: Open or initialize SQLite state
+    State-->>Main: Per-user cursors and pending work
 
     loop Each configured user (serially)
         Main->>SyncManager: Run user sync
-        SyncManager->>Letterboxd: Get entries newer than saved ID
-        Letterboxd-->>SyncManager: New TMDB IDs
+        SyncManager->>Letterboxd: Get entries newer than saved cursor
+        Letterboxd-->>SyncManager: Entries and scrape completeness
 
         loop Each new movie
             SyncManager->>Radarr: Check state and add/monitor
@@ -73,10 +73,10 @@ sequenceDiagram
         opt Collection configured
             SyncManager->>Jellyfin: Find and remove watched collection items
         end
-        SyncManager-->>Main: Newest discovered ID
+        SyncManager->>State: Transactionally checkpoint each transition
+        SyncManager-->>Main: User result
     end
 
-    Main->>State: Save all updated user IDs once
     Main-->>Scheduler: Cycle complete
     Scheduler->>Scheduler: Wait full sync interval
 ```
@@ -118,7 +118,7 @@ sequenceDiagram
     docker compose up -d --build
     ```
 
-The first cycle starts immediately. If no persisted state exists, it processes each user's full Letterboxd watchlist; large watchlists may therefore take longer on the first run.
+The first cycle starts immediately. If no persisted state exists, it processes each user's full Letterboxd watchlist; large watchlists may therefore take longer on the first run. Production Compose stores active state in `/app/data/sync_state.db`. On the first SQLite start only, an existing `/app/data/sync_state.json` in either the legacy flat format or version-2 format is imported before any external service client is initialized.
 
 ## Configuration (`config.yaml`)
 
@@ -185,7 +185,13 @@ Configuration is loaded once at process startup. Restart the container after cha
 docker compose restart letterboxd-sync
 ```
 
-A restart triggers a cycle immediately. Persisted state is retained at `/app/data/sync_state.json` by production Compose, so normal restarts remain incremental. Removing or losing that state causes the next run to process the full watchlist again. State updates are written once after all configured users finish each cycle.
+A restart triggers a cycle immediately. SQLite state is retained at `/app/data/sync_state.db` by production Compose, so normal restarts remain incremental and retry pending movie stages. `SYNC_STATE_DB_PATH` selects the authoritative SQLite database. `SYNC_STATE_PATH` selects only the legacy JSON import source. If `SYNC_STATE_DB_PATH` is unset, the database is derived beside the JSON source by replacing a final `.json` suffix with `.db`, or by appending `.db` otherwise.
+
+When the database does not exist, a valid legacy flat or version-2 JSON source is imported once into a mode-`0600` temporary database and atomically installed. The JSON file is not renamed, deleted, rewritten, or kept in sync afterward. Once a database exists it always takes precedence: a corrupt, foreign, or unsupported database stops the cycle rather than falling back to potentially stale JSON. New databases are created with mode `0600` where the platform supports it; existing file ownership and permissions are left unchanged.
+
+Before upgrading, stop the service and back up both `sync_state.json` and any existing `sync_state.db` using your normal filesystem backup process. To restore SQLite state, stop the service and replace the database with a known-good database created by this application. Do not delete an invalid database expecting automatic JSON recovery: move or replace it deliberately after preserving it for diagnosis. Deleting the database while leaving the retained JSON causes the next start to import that now-stale pre-migration snapshot again and may repeat remote work.
+
+Downgrading to a JSON-only release is not lossless. The retained JSON contains none of the checkpoints committed after SQLite migration. Stop the service, restore or select the retained JSON for the older release, and expect that work completed since migration can be retried. SQLite checkpoints provide transactional local persistence, but a remote operation that succeeds immediately before a checkpoint failure remains at-least-once and can also be repeated.
 
 ## Health and observability
 

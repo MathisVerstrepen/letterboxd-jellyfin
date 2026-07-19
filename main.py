@@ -12,7 +12,7 @@ from src.logger import get_logger, log_context, new_run_id, setup_logger
 from src.observability import ObservabilityService
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
-from src.state_manager import load_state, save_state
+from src.state_manager import SQLiteStateStore, StateCheckpoint
 from src.sync import SyncManager
 
 
@@ -45,39 +45,42 @@ def _run_sync_cycle(
     started_datetime = datetime.now(UTC)
     started_at = utc_timestamp(started_datetime)
     started_monotonic = time.monotonic()
-
     observability.begin_cycle()
+    store = SQLiteStateStore()
     try:
         logger.info(
             "Sync run started",
             extra={"event": "sync_run_started"},
         )
-        state_result = load_state()
-        sync_state = state_result.data
-        failures["state"] += state_result.failed_items
-        if state_result.failed_items:
+        initialization = store.initialize()
+        failures["state"] += initialization.failed_items
+        if initialization.failed_items:
             state_persistence_ok = False
 
         clients_ready = False
-        try:
-            jellyfin_config = config["jellyfin"]
-            radarr_config = config["radarr"]
-            jellyfin_client = Jellyfin(
-                url=jellyfin_config["url"], api_key=jellyfin_config["api_key"]
-            )
-            radarr_client = RadarrClient(
-                url=radarr_config["url"],
-                api_key=radarr_config["api_key"],
-                timeout=radarr_config.get("timeout", 60),
-            )
-            clients_ready = True
-        except Exception:
-            failures["runtime"] += 1
-            logger.error(
-                "Sync clients could not be initialized",
-                extra={"event": "sync_client_initialization_failed", "stage": "runtime"},
-                exc_info=True,
-            )
+        if state_persistence_ok:
+            try:
+                jellyfin_config = config["jellyfin"]
+                radarr_config = config["radarr"]
+                jellyfin_client = Jellyfin(
+                    url=jellyfin_config["url"], api_key=jellyfin_config["api_key"]
+                )
+                radarr_client = RadarrClient(
+                    url=radarr_config["url"],
+                    api_key=radarr_config["api_key"],
+                    timeout=radarr_config.get("timeout", 60),
+                )
+                clients_ready = True
+            except Exception:
+                failures["runtime"] += 1
+                logger.error(
+                    "Sync clients could not be initialized",
+                    extra={
+                        "event": "sync_client_initialization_failed",
+                        "stage": "runtime",
+                    },
+                    exc_info=True,
+                )
 
         if clients_ready:
             for user_config in config.get("users", []):
@@ -100,11 +103,23 @@ def _run_sync_cycle(
 
                 with log_context(user=username):
                     try:
+                        user_load = store.load_or_create_user(username)
+                        failures["state"] += user_load.failed_items
+                        if user_load.failed_items:
+                            state_persistence_ok = False
+                            break
+
+                        def checkpoint(
+                            delta: StateCheckpoint, _username: str = username
+                        ) -> Any:
+                            return store.checkpoint_user(_username, delta)
+
                         manager = SyncManager(
                             user_config,
                             jellyfin_client,
                             radarr_client,
-                            sync_state.get(username),
+                            user_load.data,
+                            checkpoint,
                             config.get("letterboxd", {}),
                             radarr_config,
                         )
@@ -123,13 +138,9 @@ def _run_sync_cycle(
                     queue_counts[queue] += count
                 if result.completed:
                     completed_users += 1
-                if result.state_advance_id:
-                    sync_state[username] = result.state_advance_id
-
-            save_result = save_state(sync_state)
-            failures["state"] += save_result.failed_items
-            if save_result.failed_items:
-                state_persistence_ok = False
+                if result.failures_by_stage["state"]:
+                    state_persistence_ok = False
+                    break
     except Exception:
         outer_cycle_failed = True
         failures["runtime"] += 1
@@ -139,6 +150,10 @@ def _run_sync_cycle(
             exc_info=True,
         )
     finally:
+        close_result = store.close()
+        failures["state"] += close_result.failed_items
+        if close_result.failed_items:
+            state_persistence_ok = False
         finished_datetime = datetime.now(UTC)
         finished_at = utc_timestamp(finished_datetime)
         duration = round(time.monotonic() - started_monotonic, 3)

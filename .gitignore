@@ -8,6 +8,10 @@ __pycache__
 config.yaml
 proxies.txt
 sync_state.json
+sync_state.db
+sync_state.db-journal
+sync_state.db-shm
+sync_state.db-wal
 
 # Dev environment
 dev-environment

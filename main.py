@@ -12,7 +12,7 @@ from src.logger import get_logger, log_context, new_run_id, setup_logger
 from src.observability import ObservabilityService
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
-from src.state_manager import load_state, save_state
+from src.state_manager import empty_user_state, load_state, save_state
 from src.sync import SyncManager
 
 
@@ -58,26 +58,36 @@ def _run_sync_cycle(
         if state_result.failed_items:
             state_persistence_ok = False
 
+        if state_persistence_ok and state_result.migrated:
+            migration_save = save_state(sync_state)
+            failures["state"] += migration_save.failed_items
+            if migration_save.failed_items:
+                state_persistence_ok = False
+
         clients_ready = False
-        try:
-            jellyfin_config = config["jellyfin"]
-            radarr_config = config["radarr"]
-            jellyfin_client = Jellyfin(
-                url=jellyfin_config["url"], api_key=jellyfin_config["api_key"]
-            )
-            radarr_client = RadarrClient(
-                url=radarr_config["url"],
-                api_key=radarr_config["api_key"],
-                timeout=radarr_config.get("timeout", 60),
-            )
-            clients_ready = True
-        except Exception:
-            failures["runtime"] += 1
-            logger.error(
-                "Sync clients could not be initialized",
-                extra={"event": "sync_client_initialization_failed", "stage": "runtime"},
-                exc_info=True,
-            )
+        if state_persistence_ok:
+            try:
+                jellyfin_config = config["jellyfin"]
+                radarr_config = config["radarr"]
+                jellyfin_client = Jellyfin(
+                    url=jellyfin_config["url"], api_key=jellyfin_config["api_key"]
+                )
+                radarr_client = RadarrClient(
+                    url=radarr_config["url"],
+                    api_key=radarr_config["api_key"],
+                    timeout=radarr_config.get("timeout", 60),
+                )
+                clients_ready = True
+            except Exception:
+                failures["runtime"] += 1
+                logger.error(
+                    "Sync clients could not be initialized",
+                    extra={
+                        "event": "sync_client_initialization_failed",
+                        "stage": "runtime",
+                    },
+                    exc_info=True,
+                )
 
         if clients_ready:
             for user_config in config.get("users", []):
@@ -100,11 +110,24 @@ def _run_sync_cycle(
 
                 with log_context(user=username):
                     try:
+                        users_state = sync_state["users"]
+                        if username not in users_state:
+                            users_state[username] = empty_user_state()
+                            user_save = save_state(sync_state)
+                            failures["state"] += user_save.failed_items
+                            if user_save.failed_items:
+                                state_persistence_ok = False
+                                break
+
+                        def checkpoint() -> Any:
+                            return save_state(sync_state)
+
                         manager = SyncManager(
                             user_config,
                             jellyfin_client,
                             radarr_client,
-                            sync_state.get(username),
+                            users_state[username],
+                            checkpoint,
                             config.get("letterboxd", {}),
                             radarr_config,
                         )
@@ -123,13 +146,9 @@ def _run_sync_cycle(
                     queue_counts[queue] += count
                 if result.completed:
                     completed_users += 1
-                if result.state_advance_id:
-                    sync_state[username] = result.state_advance_id
-
-            save_result = save_state(sync_state)
-            failures["state"] += save_result.failed_items
-            if save_result.failed_items:
-                state_persistence_ok = False
+                if result.failures_by_stage["state"]:
+                    state_persistence_ok = False
+                    break
     except Exception:
         outer_cycle_failed = True
         failures["runtime"] += 1

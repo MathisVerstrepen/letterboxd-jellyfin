@@ -245,6 +245,14 @@ The `radarr_add`, `jellyfin_add`, and `jellyfin_remove` queue values count local
 admitted by the latest cycle. They are not retry counts, successful-operation counts,
 or Radarr's remote queue depth.
 
+### Grafana dashboard template
+
+`grafana/letterboxd-jellyfin-overview.json` is an importable Grafana dashboard for
+the metrics above. It includes service and readiness status, scheduler state, sync
+freshness and duration, outcomes, queue activity, and failures by stage. Select a
+Prometheus data source during import. The dashboard expects Prometheus to scrape the
+application with `job_name: letterboxd-jellyfin`.
+
 Runtime stdout is one JSON object per log record. Logs include a stable `event` and
 safe aggregate context, making them suitable for Docker log collection without
 emitting API keys or proxy credentials.

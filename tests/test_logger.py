@@ -116,8 +116,14 @@ class LoggerContractTests(unittest.TestCase):
         logger.info("After workers", extra={"event": "after_workers"})
 
         by_event = {record["event"]: record for record in self.capture.records}
-        self.assertEqual(("run-a", "alice"), (by_event["worker_a"]["run_id"], by_event["worker_a"]["user"]))
-        self.assertEqual(("run-b", "bob"), (by_event["worker_b"]["run_id"], by_event["worker_b"]["user"]))
+        self.assertEqual(
+            ("run-a", "alice"),
+            (by_event["worker_a"]["run_id"], by_event["worker_a"]["user"]),
+        )
+        self.assertEqual(
+            ("run-b", "bob"),
+            (by_event["worker_b"]["run_id"], by_event["worker_b"]["user"]),
+        )
         self.assertNotIn("run_id", by_event["after_workers"])
         self.assertNotIn("user", by_event["after_workers"])
 

@@ -6,11 +6,11 @@ import re
 import sys
 import traceback
 import uuid
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
-
+from typing import Any
 
 CONTEXT_FIELDS = (
     "run_id",
@@ -104,7 +104,7 @@ class JsonFormatter(logging.Formatter):
     """Serialize records to the service's secret-safe JSON log envelope."""
 
     def format(self, record: logging.LogRecord) -> str:
-        timestamp = datetime.fromtimestamp(record.created, timezone.utc)
+        timestamp = datetime.fromtimestamp(record.created, UTC)
         payload = {
             "timestamp": timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "level": record.levelname,

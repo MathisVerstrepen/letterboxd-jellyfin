@@ -9,9 +9,8 @@ from urllib.parse import urlsplit
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client.exposition import MetricsHandler
 
-from src.results import FAILURE_STAGES, QUEUE_NAMES
 from src.logger import get_logger
-
+from src.results import FAILURE_STAGES, QUEUE_NAMES
 
 logger = get_logger("observability")
 

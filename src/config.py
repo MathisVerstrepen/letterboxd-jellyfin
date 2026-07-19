@@ -1,5 +1,6 @@
-import yaml
 from typing import Any
+
+import yaml
 
 from src.exceptions import ConfigurationError
 
@@ -9,7 +10,7 @@ CONFIG_PATH = "config.yaml"
 def load_config() -> dict[str, Any]:
     """Load and validate configuration without terminating the process."""
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             loaded = yaml.safe_load(f)
     except (FileNotFoundError, OSError) as exc:
         raise ConfigurationError("Configuration file could not be read") from exc

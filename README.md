@@ -221,6 +221,7 @@ A Python 3.11 development environment can install the application and test depen
 
 ```bash
 python -m pip install -r requirements-dev.txt
+python -m ruff check .
 python -m pytest
 ```
 

@@ -1,8 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
-from bs4 import BeautifulSoup
-import bs4
 from dataclasses import dataclass
+
+import bs4
+from bs4 import BeautifulSoup
 
 from src.logger import get_logger
 from src.proxies import ProxyManager, make_request
@@ -37,7 +38,7 @@ def make_letterboxd_request(
     for attempt in range(retries):
         proxy = proxy_manager.get_proxy()
         try:
-            # Pass the selected proxy to the generic make_request function with fallback setting from proxy manager
+            # Pass the selected proxy to the generic request function with the manager's fallback.
             return make_request(url, proxy, allow_fallback=proxy_manager.allow_fallback)
         except Exception:
             logger.warning(

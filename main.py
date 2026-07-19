@@ -2,7 +2,7 @@ import errno
 import signal
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from src.config import load_config
@@ -17,7 +17,7 @@ from src.sync import SyncManager
 
 
 def utc_timestamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
 
@@ -42,7 +42,7 @@ def _run_sync_cycle(
     completed_users = 0
     state_persistence_ok = True
     outer_cycle_failed = False
-    started_datetime = datetime.now(timezone.utc)
+    started_datetime = datetime.now(UTC)
     started_at = utc_timestamp(started_datetime)
     started_monotonic = time.monotonic()
 
@@ -139,7 +139,7 @@ def _run_sync_cycle(
             exc_info=True,
         )
     finally:
-        finished_datetime = datetime.now(timezone.utc)
+        finished_datetime = datetime.now(UTC)
         finished_at = utc_timestamp(finished_datetime)
         duration = round(time.monotonic() - started_monotonic, 3)
         failed_items = sum(failures.values())

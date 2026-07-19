@@ -36,7 +36,6 @@ The service runs one cycle immediately after startup. Each cycle performs the fo
 After a cycle finishes, the scheduler waits the full `system.sync_interval` before starting the next cycle. User processing is serial.
 
 ```mermaid
-%%{ init : { "theme" : "default" }}%%
 sequenceDiagram
     participant Scheduler as "main.py scheduler"
     participant Main as "main.py"

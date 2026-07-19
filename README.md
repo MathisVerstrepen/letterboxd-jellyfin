@@ -4,7 +4,17 @@
 
 Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The service discovers newly added watchlist movies, adds or monitors them in Radarr, adds movies that are already available to the configured Jellyfin collection, and removes watched collection items on a schedule.
 
-![Splitter-1](https://raw.githubusercontent.com/MathisVerstrepen/github-visual-assets/main/splitter/splitter-1.png)
+## Table of contents
+
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Prerequisites](#prerequisites)
+- [Quick Start Guide](#quick-start-guide)
+- [Configuration (`config.yaml`)](#configuration-configyaml)
+- [Health and observability](#health-and-observability)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [License](#license)
 
 ## Features
 
@@ -17,8 +27,6 @@ Sync Letterboxd watchlists with Radarr and existing Jellyfin collections. The se
 -   **Optional Proxies**: Supports HTTP, HTTPS, SOCKS5, and SOCKS5H proxies, connectivity validation, and configurable direct-request fallback.
 -   **Easy Deployment**: Includes a Dockerfile and production Compose configuration.
 -   **Health and Observability**: Exposes structured JSON logs, health/readiness status, and Prometheus metrics.
-
-![Splitter-1](https://raw.githubusercontent.com/MathisVerstrepen/github-visual-assets/main/splitter/splitter-1.png)
 
 ## How It Works
 

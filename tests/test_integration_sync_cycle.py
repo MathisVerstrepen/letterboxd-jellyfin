@@ -18,6 +18,7 @@ from src.results import (
     WatchlistEntry,
     WatchlistResult,
 )
+from src.state_manager import MovieStateChange, StateCheckpoint
 
 
 def config_for(*users):
@@ -45,6 +46,12 @@ def config_with_sonarr(*users):
         "root_folder_path": "/series",
         "quality_profile_id": 8,
     }
+    return config
+
+
+def config_sonarr_only(*users):
+    config = config_with_sonarr(*users)
+    del config["radarr"]
     return config
 
 
@@ -129,6 +136,17 @@ def load_movie_row(database, username="alice", endpoint="film/new/"):
         return connection.execute(
             """
             SELECT status, completion_reason FROM movies
+            WHERE username = ? AND endpoint = ?
+            """,
+            (username, endpoint),
+        ).fetchone()
+
+
+def load_series_row(database, username="alice", endpoint="show/new/"):
+    with state_manager.sqlite3.connect(database) as connection:
+        return connection.execute(
+            """
+            SELECT status, completion_reason FROM series
             WHERE username = ? AND endpoint = ?
             """,
             (username, endpoint),
@@ -462,3 +480,143 @@ def test_sonarr_initialization_failure_does_not_block_movie_work(tmp_path, monke
     assert outcome == "partial"
     radarr.check_radarr_state.assert_called_once()
     jellyfin.add_to_collection.assert_called_once()
+
+
+@pytest.mark.integration
+def test_sonarr_only_skips_movie_and_processes_series_and_cleanup(
+    tmp_path, monkeypatch
+):
+    database, _ = use_state_paths(tmp_path, monkeypatch)
+    jellyfin, _, _, radarr_constructor = external_fakes(monkeypatch)
+    sonarr = Mock()
+    series_resource = {"tmdbId": 202, "is_animation": False}
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(state=series_resource)
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    monkeypatch.setattr(main, "SonarrClient", Mock(return_value=sonarr))
+    jellyfin.get_played_movies_from_collection.return_value = PlayedMoviesResult(["played"])
+    jellyfin.remove_from_collection.return_value = MutationResult(attempted=1, succeeded=1)
+    entries = [
+        WatchlistEntry(
+            "film/new/", LetterboxdDetailResult("resolved", "movie", "101")
+        ),
+        WatchlistEntry(
+            "show/new/", LetterboxdDetailResult("resolved", "series", "202")
+        ),
+    ]
+    scrape_mock = Mock(return_value=scrape(entries, cursor="film/new/"))
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", scrape_mock)
+
+    outcome = main.run_sync_cycle(
+        config_sonarr_only(user()), ObservabilityService("127.0.0.1", 0), 1
+    )
+
+    assert outcome == "success"
+    radarr_constructor.assert_not_called()
+    sonarr.add_to_sonarr_download_queue.assert_called_once_with(
+        series_resource, "/series", 8
+    )
+    assert load_movie_row(database) is None
+    assert scrape_mock.call_args.kwargs == {
+        "include_series": True,
+        "include_movies": False,
+    }
+    jellyfin.add_to_collection.assert_not_called()
+    jellyfin.remove_from_collection.assert_called_once_with(["played"], "collection")
+
+
+@pytest.mark.integration
+def test_radarr_initialization_failure_does_not_block_series_work(
+    tmp_path, monkeypatch
+):
+    database, source = use_state_paths(tmp_path, monkeypatch)
+    store = state_manager.SQLiteStateStore(str(database), str(source))
+    assert store.initialize().failed_items == 0
+    assert store.load_or_create_user("alice").failed_items == 0
+    pending = {
+        "tmdb_id": "101",
+        "status": "pending_radarr",
+        "title": None,
+        "year": None,
+        "completion_reason": None,
+    }
+    assert store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            movie_changes=(MovieStateChange("upsert", "film/pending/", pending),)
+        ),
+    ).failed_items == 0
+    assert store.close().failed_items == 0
+    jellyfin, radarr, _, radarr_constructor = external_fakes(monkeypatch)
+    radarr_constructor.side_effect = RuntimeError("down")
+    sonarr = Mock()
+    series_resource = {"tmdbId": 202, "is_animation": False}
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(state=series_resource)
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    monkeypatch.setattr(main, "SonarrClient", Mock(return_value=sonarr))
+    entry = WatchlistEntry(
+        "show/new/", LetterboxdDetailResult("resolved", "series", "202")
+    )
+    monkeypatch.setattr(sync, "get_new_watchlist_entries", Mock(return_value=scrape([entry])))
+
+    observability = ObservabilityService("127.0.0.1", 0)
+    outcome = main.run_sync_cycle(config_with_sonarr(user()), observability, 1)
+
+    assert outcome == "partial"
+    assert observability.snapshot()["last_run"]["failures_by_stage"]["radarr"] == 1
+    assert load_movie_row(database, endpoint="film/pending/") == (
+        "pending_radarr",
+        None,
+    )
+    assert load_series_row(database) == ("completed", "sonarr_processed")
+    radarr.check_radarr_state.assert_not_called()
+    radarr.add_to_radarr_download_queue.assert_not_called()
+    sonarr.add_to_sonarr_download_queue.assert_called_once()
+    jellyfin.get_played_movies_from_collection.assert_called_once()
+
+
+@pytest.mark.integration
+def test_sonarr_only_freezes_existing_movie_until_radarr_returns(
+    tmp_path, monkeypatch
+):
+    database, source = use_state_paths(tmp_path, monkeypatch)
+    store = state_manager.SQLiteStateStore(str(database), str(source))
+    assert store.initialize().failed_items == 0
+    assert store.load_or_create_user("alice").failed_items == 0
+    pending = {
+        "tmdb_id": "101",
+        "status": "pending_radarr",
+        "title": None,
+        "year": None,
+        "completion_reason": None,
+    }
+    assert store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            movie_changes=(MovieStateChange("upsert", "film/existing/", pending),)
+        ),
+    ).failed_items == 0
+    assert store.close().failed_items == 0
+    _, radarr, _, radarr_constructor = external_fakes(monkeypatch)
+    monkeypatch.setattr(main, "SonarrClient", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        sync, "get_new_watchlist_entries", Mock(return_value=scrape([], cursor=None))
+    )
+    observability = ObservabilityService("127.0.0.1", 0)
+
+    assert main.run_sync_cycle(config_sonarr_only(user()), observability, 1) == "success"
+    assert load_movie_row(database, endpoint="film/existing/") == (
+        "pending_radarr",
+        None,
+    )
+    radarr_constructor.assert_not_called()
+
+    assert main.run_sync_cycle(config_for(user()), observability, 2) == "success"
+    assert load_movie_row(database, endpoint="film/existing/") == (
+        "completed",
+        "jellyfin_added",
+    )
+    radarr.check_radarr_state.assert_called_once_with("101")

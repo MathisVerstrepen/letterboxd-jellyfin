@@ -94,8 +94,7 @@ sequenceDiagram
 
 -   **Docker** and **Docker Compose** installed on your system.
 -   A running **Jellyfin** instance.
--   A running **Radarr** instance.
--   Optionally, an operator-provided **Sonarr v3/v4** instance. It is not included in either Compose stack.
+-   At least one provider: a running **Radarr** instance, an operator-provided **Sonarr v3/v4** instance, or both. Sonarr is not included in either Compose stack.
 -   The usernames of the Letterboxd accounts you wish to sync.
 -   (Optional) A list of proxies if you plan to sync a large number of movies or run the script very frequently.
 
@@ -114,9 +113,9 @@ sequenceDiagram
     ```
 
 3.  **Edit the configuration:**
-    Open `config.yaml` and provide your Jellyfin and Radarr URLs/API keys plus each user mapping. Production Compose uses host networking, so both service URLs must be reachable from the Docker host network namespace. For services published on the same host, values such as `http://127.0.0.1:8096` and `http://127.0.0.1:7878` may be appropriate. Do not assume Docker service names such as `jellyfin` or `radarr` resolve in this production setup.
+    Open `config.yaml` and provide Jellyfin plus at least one of Radarr or Sonarr, along with each user mapping. Production Compose uses host networking, so every configured service URL must be reachable from the Docker host network namespace. Do not assume Docker service names such as `jellyfin`, `radarr`, or `sonarr` resolve in this production setup.
 
-    Create or choose the Jellyfin collection first; the service does not create collections. Jellyfin API keys are managed in the Jellyfin dashboard, and the collection ID appears in the collection page URL. Radarr's API key is available under **Settings > General**; use root-folder and quality-profile values that exist in your Radarr instance.
+    Create or choose the Jellyfin collection first; the service does not create collections. Jellyfin remains required for every provider mode. Use root-folder and quality-profile values that exist in each configured Arr provider.
 
     If you use `letterboxd.proxy_file`, uncomment and adjust the optional `proxies.txt` bind mount in `docker-compose.yml` so the file exists at the configured path inside the application container.
 
@@ -148,6 +147,7 @@ jellyfin:
   url: "http://127.0.0.1:8096"
   api_key: "YOUR_JELLYFIN_API_KEY"
 
+# Optional movie provider; omit the entire section for Jellyfin + Sonarr-only mode.
 radarr:
   # Must be reachable from the host network namespace with production Compose.
   url: "http://127.0.0.1:7878"
@@ -160,7 +160,7 @@ radarr:
     enabled: true             # Set to true to use a separate path for animations.
     root_folder_path: "/movies/Animated" # Path for animated movies.
 
-# Optional: omit the complete section for movie-only operation.
+# Optional series provider; omit the complete section for movie-only operation.
 sonarr:
   url: "http://127.0.0.1:8989" # Operator-provided Sonarr v3/v4 API.
   api_key: "YOUR_SONARR_API_KEY"
@@ -200,6 +200,8 @@ users:
 
 The `sonarr` section is absent-or-complete. When present, `url`, `api_key`, and `root_folder_path` must be non-empty strings, `quality_profile_id` must be a positive integer, and optional `timeout` must be a positive integer (default `60`). Optional global `animated_tv` requires a boolean `enabled`; when enabled, it also requires a non-empty alternative `root_folder_path`. Sonarr lookup resources are considered animated only when their `genres` value is a list containing the exact, case-sensitive element `Animation`. Animated routing changes only the root path: quality profile, monitor-all behavior, new-item monitoring, and immediate missing-episode search remain identical to standard series. Removing the Sonarr section pauses pending series work without deleting it; movies continue normally. Re-adding it resumes retries and does not repeat a completed historical backfill. A partial historical traversal leaves the durable backfill marker incomplete, so a later cycle retries the series-only pass while completed endpoint history prevents duplicate provider work.
 
+Jellyfin is always required, and at least one of `radarr` or `sonarr` must be present. Radarr-only retains movie discovery and Jellyfin collection behavior; combined mode processes both media types. In Sonarr-only mode, Letterboxd movies are skipped while the shared cursor continues advancing, so those skipped movies are not backfilled if Radarr is configured later. Existing durable movie records are left unchanged until Radarr returns, while series processing and Jellyfin watched-item removal continue. A configured provider that is temporarily unavailable does not block the other provider; its failure is recorded safely and its pending work retries in a later cycle.
+
 Configuration is loaded once at process startup. Restart the container after changing any setting:
 
 ```bash
@@ -228,7 +230,7 @@ The service provides structured JSON logs plus `/health`, `/ready`, and `/metric
     Each line is a structured JSON log object. For endpoint or metrics issues, follow the [observability troubleshooting guide](docs/health-and-observability.md#troubleshooting).
 
 -   **Connection Refused Errors:**
-    Production Compose uses host networking. Confirm the configured Radarr and Jellyfin URLs are reachable from the Docker host itself and that the services listen on the specified addresses and ports. Docker service names from another Compose network are not generic production hostnames.
+    Production Compose uses host networking. Confirm every configured Jellyfin, Radarr, and Sonarr URL is reachable from the Docker host itself and that each service listens on the specified address and port. Docker service names from another Compose network are not generic production hostnames.
 
 -   **403 Forbidden Errors from Letterboxd:**
     This means Letterboxd is blocking your requests, likely due to a high volume.

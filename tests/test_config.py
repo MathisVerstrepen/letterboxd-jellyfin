@@ -39,6 +39,54 @@ sonarr:
     assert loaded["sonarr"]["quality_profile_id"] == 3
 
 
+def test_sonarr_only_configuration_loads(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+jellyfin: {url: http://jellyfin.invalid, api_key: jellyfin-key}
+sonarr:
+  url: http://sonarr.invalid
+  api_key: sonarr-key
+  root_folder_path: /series
+  quality_profile_id: 3
+users: []
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", str(path))
+    assert "radarr" not in config.load_config()
+
+
+def test_jellyfin_only_configuration_is_rejected(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "jellyfin: {url: http://jellyfin.invalid, api_key: jellyfin-key}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", str(path))
+    with pytest.raises(ConfigurationError) as error:
+        config.load_config()
+    assert str(error.value) == "At least one media provider configuration is required"
+
+
+def test_malformed_present_radarr_fails_even_with_valid_sonarr(tmp_path, monkeypatch):
+    with pytest.raises(ConfigurationError) as error:
+        load(
+            tmp_path,
+            monkeypatch,
+            """
+sonarr:
+  url: http://sonarr.invalid
+  api_key: sonarr-key
+  root_folder_path: /series
+  quality_profile_id: 3
+radarr: {url: private-provider-value}
+""",
+        )
+    assert str(error.value) == "Radarr configuration is incomplete or invalid"
+    assert "private-provider-value" not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "animated_tv",
     [

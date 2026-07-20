@@ -58,6 +58,8 @@ def build_manager(
     sonarr_enabled=False,
     sonarr=None,
     sonarr_config=None,
+    radarr_enabled=True,
+    radarr_client=None,
 ):
     jellyfin = Mock()
     jellyfin.get_movie_id.return_value = "jf-id"
@@ -65,7 +67,7 @@ def build_manager(
     jellyfin.get_user_id.return_value = "user-id"
     jellyfin.get_played_movies_from_collection.return_value = PlayedMoviesResult([])
     jellyfin.remove_from_collection.return_value = MutationResult()
-    radarr = Mock()
+    radarr = radarr_client or Mock()
     radarr.add_to_radarr_download_queue.return_value = MutationResult(
         attempted=1, succeeded=1
     )
@@ -100,6 +102,7 @@ def build_manager(
         sonarr_config=sonarr_config
         or {"root_folder_path": "/series", "quality_profile_id": 8},
         sonarr_enabled=sonarr_enabled,
+        radarr_enabled=radarr_enabled,
     )
     return manager, user_state, jellyfin, radarr, checkpoint
 
@@ -448,3 +451,107 @@ def test_sonarr_animated_tv_changes_only_root(
     sonarr.add_to_sonarr_download_queue.assert_called_once_with(
         resource, expected_root, 8
     )
+
+
+def test_sonarr_only_skips_movies_advances_cursor_and_runs_watched_cleanup(monkeypatch):
+    sonarr = Mock()
+    resource = {"tmdbId": 20, "is_animation": False}
+    sonarr.check_sonarr_state.return_value = SonarrLookupResult(state=resource)
+    sonarr.add_to_sonarr_download_queue.return_value = MutationResult(
+        attempted=1, succeeded=1
+    )
+    manager, state, jellyfin, radarr, _ = build_manager(
+        sonarr_enabled=True,
+        sonarr=sonarr,
+        radarr_enabled=False,
+        radarr_client=Mock(),
+    )
+    entries = [
+        WatchlistEntry(
+            "film/a/", LetterboxdDetailResult("resolved", "movie", "10")
+        ),
+        WatchlistEntry(
+            "show/a/", LetterboxdDetailResult("resolved", "series", "20")
+        ),
+    ]
+    scrape = set_watchlist(monkeypatch, watchlist(entries, cursor="film/a/"))
+    jellyfin.get_played_movies_from_collection.return_value = PlayedMoviesResult(["played"])
+    jellyfin.remove_from_collection.return_value = MutationResult(attempted=1, succeeded=1)
+
+    result = manager.run()
+
+    assert result.completed
+    assert state["cursor"] == {"kind": "letterboxd", "value": "film/a/"}
+    assert state["movies"] == {}
+    assert state["series"]["show/a/"]["status"] == "completed"
+    assert scrape.call_args.kwargs == {"include_series": True, "include_movies": False}
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.get_movie_id.assert_not_called()
+    jellyfin.add_to_collection.assert_not_called()
+    jellyfin.remove_from_collection.assert_called_once_with(["played"], "collection")
+
+
+def test_sonarr_only_leaves_existing_movie_records_untouched(monkeypatch):
+    movies = {
+        "film/retry-detail/": record("retry_letterboxd"),
+        "film/pending/": record("pending_radarr", "1"),
+        "film/jellyfin/": record("pending_jellyfin", "2", "Movie", 2020),
+    }
+    original = deepcopy(movies)
+    state = {
+        "cursor": {"kind": "letterboxd", "value": "film/old/"},
+        "movies": movies,
+        "series": {},
+        "series_backfill_complete": True,
+    }
+    radarr = Mock()
+    manager, state, jellyfin, _, checkpoint = build_manager(
+        state=state,
+        sonarr_enabled=True,
+        sonarr=Mock(),
+        radarr_enabled=False,
+        radarr_client=radarr,
+    )
+    existing_endpoint = WatchlistEntry(
+        "film/retry-detail/",
+        LetterboxdDetailResult("resolved", "series", "99"),
+    )
+    set_watchlist(
+        monkeypatch, watchlist([existing_endpoint], cursor="film/old/")
+    )
+    detail = Mock()
+    monkeypatch.setattr(sync, "extract_tmdb_id_from_endpoint", detail)
+
+    manager.run()
+
+    assert state["movies"] == original
+    assert state["series"] == {}
+    checkpoint.assert_not_called()
+    detail.assert_not_called()
+    radarr.check_radarr_state.assert_not_called()
+    jellyfin.get_movie_id.assert_not_called()
+    jellyfin.add_to_collection.assert_not_called()
+
+
+def test_sonarr_only_unknown_detail_is_series_retry(monkeypatch):
+    manager, state, _, radarr, _ = build_manager(
+        sonarr_enabled=True,
+        sonarr=Mock(),
+        radarr_enabled=False,
+        radarr_client=Mock(),
+    )
+    entry = WatchlistEntry("unknown/a/", LetterboxdDetailResult("retry"))
+    set_watchlist(
+        monkeypatch,
+        watchlist([entry], outcome="partial", cursor="unknown/a/", failed=1),
+    )
+
+    manager.run()
+
+    assert state["movies"] == {}
+    assert state["series"]["unknown/a/"] == {
+        "tmdb_id": None,
+        "status": "retry_letterboxd",
+        "completion_reason": None,
+    }
+    radarr.check_radarr_state.assert_not_called()

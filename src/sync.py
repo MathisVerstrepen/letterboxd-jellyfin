@@ -52,11 +52,11 @@ class SyncManager:
         self,
         user_config: dict[str, Any],
         jellyfin: Jellyfin,
-        radarr: RadarrClient,
+        radarr: RadarrClient | None,
         user_state: dict[str, Any],
         checkpoint: Callable[[StateCheckpoint], StateSaveResult],
         letterboxd_config: dict[str, Any],
-        radarr_config: dict[str, Any],
+        radarr_config: dict[str, Any] | None,
         *,
         proxy_manager: ProxyManager,
         completed_endpoint_lookup: Callable[
@@ -65,6 +65,7 @@ class SyncManager:
         sonarr: Any = None,
         sonarr_config: dict[str, Any] | None = None,
         sonarr_enabled: bool = False,
+        radarr_enabled: bool = True,
     ) -> None:
         self.letterboxd_username = user_config["letterboxd_username"]
         self.jellyfin_collection_id = user_config.get("jellyfin_collection_id")
@@ -73,7 +74,8 @@ class SyncManager:
         self.checkpoint = checkpoint
         self.jellyfin = jellyfin
         self.radarr = radarr
-        self.radarr_config = radarr_config
+        self.radarr_config = radarr_config or {}
+        self.radarr_enabled = radarr_enabled
         self.max_workers = letterboxd_config.get("max_concurrent_requests", 5)
         self.proxy_manager = proxy_manager
         self.completed_endpoint_lookup = completed_endpoint_lookup
@@ -115,7 +117,12 @@ class SyncManager:
         series_state = self.user_state["series"]
         cursor = self.user_state["cursor"]
 
-        if cursor and cursor["kind"] == "legacy_tmdb" and watchlist.boundary_uri:
+        if (
+            self.radarr_enabled
+            and cursor
+            and cursor["kind"] == "legacy_tmdb"
+            and watchlist.boundary_uri
+        ):
             boundary = movies.get(watchlist.boundary_uri)
             if boundary and boundary["status"] == "retry_letterboxd":
                 del movies[watchlist.boundary_uri]
@@ -128,6 +135,8 @@ class SyncManager:
                 continue
             existing = movies.get(entry.endpoint)
             existing_series = series_state.get(entry.endpoint)
+            if not self.radarr_enabled and existing is not None:
+                continue
             if entry.detail.outcome == "retry":
                 if existing is not None or existing_series is not None:
                     continue
@@ -319,6 +328,8 @@ class SyncManager:
         queue_counts: dict[str, int],
         queue_totals: dict[str, int],
     ) -> SyncResult | None:
+        if self.radarr is None:
+            return None
         movie = self.user_state["movies"][endpoint]
         lookup = self.radarr.check_radarr_state(movie["tmdb_id"])
         failures["radarr"] += lookup.failed_items
@@ -482,6 +493,8 @@ class SyncManager:
         try:
             original_cursor = self.user_state["cursor"]
             discovery_passes = []
+            include_movies = self.radarr_enabled
+            sonarr_only = self.sonarr_enabled and not self.radarr_enabled
             if self.sonarr_enabled and not self.user_state["series_backfill_complete"]:
                 if original_cursor is None:
                     discovery_passes.append(
@@ -492,9 +505,9 @@ class SyncManager:
                                 self.max_workers,
                                 None,
                                 include_series=True,
-                                include_movies=True,
+                                include_movies=include_movies,
                             ),
-                            False,
+                            sonarr_only,
                             True,
                             True,
                         )
@@ -523,9 +536,9 @@ class SyncManager:
                                 self.max_workers,
                                 original_cursor,
                                 include_series=True,
-                                include_movies=True,
+                                include_movies=include_movies,
                             ),
-                            False,
+                            sonarr_only,
                             True,
                             False,
                         )
@@ -539,9 +552,9 @@ class SyncManager:
                             self.max_workers,
                             original_cursor,
                             include_series=True,
-                            include_movies=True,
+                            include_movies=include_movies,
                         ),
-                        False,
+                        sonarr_only,
                         True,
                         False,
                     )
@@ -617,7 +630,7 @@ class SyncManager:
                     if stopped:
                         return stopped
 
-            endpoints = list(self.user_state["movies"])
+            endpoints = list(self.user_state["movies"]) if self.radarr_enabled else []
             scrape_retry_endpoints = {
                 entry.endpoint
                 for item in discovery_passes
@@ -630,6 +643,8 @@ class SyncManager:
                 if movie is None or movie["status"] == "completed":
                     continue
                 if movie["status"] == "retry_letterboxd":
+                    if self.radarr is None:
+                        continue
                     if (
                         endpoint not in scrape_retry_endpoints
                         and cursor
@@ -643,7 +658,10 @@ class SyncManager:
                         movie = self.user_state["movies"].get(endpoint)
                     if movie is None or movie["status"] == "retry_letterboxd":
                         continue
-                if movie["status"] in {"pending_radarr", "retry_radarr"}:
+                if (
+                    self.radarr is not None
+                    and movie["status"] in {"pending_radarr", "retry_radarr"}
+                ):
                     stopped = self._process_radarr(
                         endpoint,
                         failures,

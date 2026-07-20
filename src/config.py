@@ -39,15 +39,24 @@ def load_config() -> dict[str, Any]:
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ConfigurationError("Observability port must be an integer from 1 to 65535")
 
-    for section, required_keys in (
-        ("jellyfin", ("url", "api_key")),
-        ("radarr", ("url", "api_key")),
+    jellyfin = loaded.get("jellyfin")
+    if not isinstance(jellyfin, dict) or any(
+        not jellyfin.get(key) for key in ("url", "api_key")
     ):
-        values = loaded.get(section)
-        if not isinstance(values, dict) or any(not values.get(key) for key in required_keys):
-            raise ConfigurationError(f"Required {section} configuration is missing")
+        raise ConfigurationError("Required jellyfin configuration is missing")
 
-    if "sonarr" in loaded:
+    radarr_present = "radarr" in loaded
+    sonarr_present = "sonarr" in loaded
+    if not radarr_present and not sonarr_present:
+        raise ConfigurationError("At least one media provider configuration is required")
+    if radarr_present:
+        radarr = loaded["radarr"]
+        if not isinstance(radarr, dict) or any(
+            not radarr.get(key) for key in ("url", "api_key")
+        ):
+            raise ConfigurationError("Radarr configuration is incomplete or invalid")
+
+    if sonarr_present:
         sonarr = loaded["sonarr"]
         required = ("url", "api_key", "root_folder_path", "quality_profile_id")
         if not isinstance(sonarr, dict) or any(

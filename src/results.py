@@ -5,11 +5,12 @@ FAILURE_STAGES = (
     "configuration",
     "letterboxd",
     "radarr",
+    "sonarr",
     "jellyfin",
     "state",
     "runtime",
 )
-QUEUE_NAMES = ("radarr_add", "jellyfin_add", "jellyfin_remove")
+QUEUE_NAMES = ("radarr_add", "sonarr_add", "jellyfin_add", "jellyfin_remove")
 
 
 def empty_failures() -> dict[str, int]:
@@ -23,7 +24,20 @@ def empty_queue_counts() -> dict[str, int]:
 @dataclass(frozen=True)
 class LetterboxdDetailResult:
     outcome: str
+    media_type: str | None = None
     tmdb_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome == "resolved":
+            if self.media_type not in {"movie", "series"}:
+                raise ValueError("resolved detail requires a media type")
+            if not isinstance(self.tmdb_id, str) or not self.tmdb_id:
+                raise ValueError("resolved detail requires a TMDB ID")
+        elif self.outcome == "retry":
+            if self.media_type is not None or self.tmdb_id is not None:
+                raise ValueError("retry detail cannot carry resolved identity")
+        else:
+            raise ValueError("invalid Letterboxd detail outcome")
 
 
 @dataclass(frozen=True)
@@ -47,6 +61,17 @@ class WatchlistResult:
 class RadarrLookupResult:
     state: dict[str, Any] | None
     failed_items: int = 0
+
+
+@dataclass(frozen=True)
+class SonarrLookupResult:
+    state: dict[str, Any] | None
+    failed_items: int = 0
+    installed: bool = False
+
+    @property
+    def resource(self) -> dict[str, Any] | None:
+        return self.state
 
 
 @dataclass(frozen=True)

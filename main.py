@@ -13,6 +13,7 @@ from src.observability import ObservabilityService
 from src.proxies import ProxyManager
 from src.radarr import RadarrClient
 from src.results import empty_failures, empty_queue_counts
+from src.sonarr import SonarrClient
 from src.state_manager import SQLiteStateStore, StateCheckpoint
 from src.sync import SyncManager
 
@@ -62,14 +63,8 @@ def _run_sync_cycle(
         if state_persistence_ok:
             try:
                 jellyfin_config = config["jellyfin"]
-                radarr_config = config["radarr"]
                 jellyfin_client = Jellyfin(
                     url=jellyfin_config["url"], api_key=jellyfin_config["api_key"]
-                )
-                radarr_client = RadarrClient(
-                    url=radarr_config["url"],
-                    api_key=radarr_config["api_key"],
-                    timeout=radarr_config.get("timeout", 60),
                 )
                 proxy_manager = ProxyManager(config.get("letterboxd", {}))
                 clients_ready = True
@@ -82,6 +77,46 @@ def _run_sync_cycle(
                         "stage": "runtime",
                     },
                     exc_info=True,
+                )
+
+        radarr_enabled = clients_ready and "radarr" in config
+        radarr_client = None
+        radarr_config = config.get("radarr", {})
+        if radarr_enabled:
+            try:
+                radarr_client = RadarrClient(
+                    url=radarr_config["url"],
+                    api_key=radarr_config["api_key"],
+                    timeout=radarr_config.get("timeout", 60),
+                )
+            except Exception:
+                failures["radarr"] += 1
+                logger.error(
+                    "Radarr client could not be initialized",
+                    extra={
+                        "event": "radarr_client_initialization_failed",
+                        "stage": "radarr",
+                    },
+                )
+
+        sonarr_enabled = clients_ready and "sonarr" in config
+        sonarr_client = None
+        sonarr_config = config.get("sonarr", {})
+        if sonarr_enabled:
+            try:
+                sonarr_client = SonarrClient(
+                    url=sonarr_config["url"],
+                    api_key=sonarr_config["api_key"],
+                    timeout=sonarr_config.get("timeout", 60),
+                )
+            except Exception:
+                failures["sonarr"] += 1
+                logger.error(
+                    "Sonarr client could not be initialized",
+                    extra={
+                        "event": "sonarr_client_initialization_failed",
+                        "stage": "sonarr",
+                    },
                 )
 
         if clients_ready:
@@ -131,6 +166,10 @@ def _run_sync_cycle(
                             radarr_config,
                             proxy_manager=proxy_manager,
                             completed_endpoint_lookup=completed_endpoint_lookup,
+                            sonarr=sonarr_client,
+                            sonarr_config=sonarr_config,
+                            sonarr_enabled=sonarr_enabled,
+                            radarr_enabled=radarr_enabled,
                         )
                         result = manager.run()
                     except Exception:

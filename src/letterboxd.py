@@ -36,7 +36,7 @@ def make_letterboxd_request(
 def extract_tmdb_id_from_endpoint(
     endpoint: str, proxy_manager: ProxyManager
 ) -> LetterboxdDetailResult:
-    """Resolve a Letterboxd film endpoint to a movie, retry, or non-movie result."""
+    """Resolve a Letterboxd endpoint to a movie, series, or retry result."""
     movie_page = make_letterboxd_request(endpoint, proxy_manager)
     if movie_page is None:
         return LetterboxdDetailResult(outcome="retry")
@@ -49,14 +49,18 @@ def extract_tmdb_id_from_endpoint(
         if not isinstance(href, str) or not href:
             raise ValueError
         if "/tv/" in href:
-            return LetterboxdDetailResult(outcome="not_movie")
-        if "/movie/" not in href:
+            media_type = "series"
+        elif "/movie/" in href:
+            media_type = "movie"
+        else:
             raise ValueError
         parts = href.rstrip("/").split("/")
         tmdb_id = parts[-1]
         if not tmdb_id:
             raise ValueError
-        return LetterboxdDetailResult(outcome="movie", tmdb_id=tmdb_id)
+        return LetterboxdDetailResult(
+            outcome="resolved", media_type=media_type, tmdb_id=tmdb_id
+        )
     except (AttributeError, TypeError, ValueError):
         logger.warning(
             "Letterboxd film detail could not be resolved",
@@ -80,6 +84,9 @@ def get_new_watchlist_entries(
     proxy_manager: ProxyManager,
     max_workers: int,
     cursor: dict | None,
+    *,
+    include_series: bool = False,
+    include_movies: bool = True,
 ) -> WatchlistResult:
     """Scrape ordered watchlist entries with explicit completeness semantics."""
     logger.info(
@@ -158,9 +165,15 @@ def get_new_watchlist_entries(
                         scan_complete = False
                         stopped = True
                         break
-                elif detail.outcome == "not_movie":
+                elif detail.media_type == "series" and not include_series:
                     skipped_items += 1
-                elif cursor_kind == "legacy_tmdb" and detail.tmdb_id == cursor_value:
+                elif detail.media_type == "movie" and not include_movies:
+                    skipped_items += 1
+                elif (
+                    cursor_kind == "legacy_tmdb"
+                    and detail.media_type == "movie"
+                    and detail.tmdb_id == cursor_value
+                ):
                     boundary_uri = endpoint
                     stopped = True
                     break

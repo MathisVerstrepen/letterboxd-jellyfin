@@ -13,10 +13,13 @@ observability:
   port: 8000
 
 # --- Service Connections ---
+# Jellyfin is required. Configure at least one of Radarr or Sonarr; either Arr
+# section may be removed completely when that provider is not used.
 jellyfin:
   url: "http://jellyfin:8096"
   api_key: "YOUR_JELLYFIN_API_KEY"
 
+# Optional movie provider.
 radarr:
   url: "http://radarr:7878"
   api_key: "YOUR_RADARR_API_KEY"
@@ -35,6 +38,19 @@ radarr:
     enabled: true
     # Root path for animated movies. Only used if 'animated_movies.enabled' is true.
     root_folder_path: "/movies/Animated"
+
+# Optional series provider. Omit this entire section to keep movie-only behavior.
+# Sonarr is operator-provided; the development Compose stack does not include it.
+sonarr:
+  url: "http://127.0.0.1:8989"
+  api_key: "YOUR_SONARR_API_KEY"
+  root_folder_path: "/series"
+  quality_profile_id: 1
+  timeout: 60
+  animated_tv:
+    # Only exact "Animation" entries in Sonarr's genres list use this path.
+    enabled: true
+    root_folder_path: "/series/Animated"
 
 # --- Letterboxd & Proxies ---
 letterboxd:

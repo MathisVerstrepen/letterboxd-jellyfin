@@ -34,7 +34,7 @@ STATE_DB_PATH = (
 logger = get_logger("state")
 
 JSON_STATE_VERSION = 2
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 1279412806
 PENDING_STATUSES = (
     "retry_letterboxd",
@@ -51,6 +51,9 @@ COMPLETION_REASONS = {
     "collection_disabled",
 }
 MOVIE_FIELDS = {"tmdb_id", "status", "title", "year", "completion_reason"}
+SERIES_PENDING_STATUSES = ("retry_letterboxd", "pending_sonarr", "retry_sonarr")
+SERIES_STATUSES = frozenset((*SERIES_PENDING_STATUSES, "completed"))
+SERIES_FIELDS = {"tmdb_id", "status", "completion_reason"}
 
 SCHEMA_V1_SQL = """
 CREATE TABLE users (
@@ -141,7 +144,7 @@ CREATE INDEX movies_username_movie_id_idx
 ON movies (username, movie_id);
 """
 
-SCHEMA_SQL = (
+SCHEMA_V2_SQL = (
     SCHEMA_V1_SQL
     + """
 
@@ -150,9 +153,66 @@ ON movies (username, status, movie_id);
 """
 )
 
+SCHEMA_SQL = (
+    SCHEMA_V2_SQL
+    + """
+
+CREATE TABLE series_sync (
+    username TEXT PRIMARY KEY NOT NULL,
+    backfill_complete INTEGER NOT NULL DEFAULT 0 CHECK (backfill_complete IN (0, 1)),
+    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
+);
+
+CREATE TABLE series (
+    series_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    endpoint TEXT NOT NULL CHECK (
+        length(endpoint) > 0 AND substr(endpoint, 1, 1) <> '/'
+    ),
+    tmdb_id TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('retry_letterboxd', 'pending_sonarr', 'retry_sonarr', 'completed')
+    ),
+    completion_reason TEXT,
+    UNIQUE (username, endpoint),
+    FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
+    CHECK (
+        (
+            status = 'retry_letterboxd'
+            AND tmdb_id IS NULL
+            AND completion_reason IS NULL
+        )
+        OR (
+            status IN ('pending_sonarr', 'retry_sonarr')
+            AND tmdb_id IS NOT NULL
+            AND length(tmdb_id) > 0
+            AND completion_reason IS NULL
+        )
+        OR (
+            status = 'completed'
+            AND tmdb_id IS NOT NULL
+            AND length(tmdb_id) > 0
+            AND completion_reason = 'sonarr_processed'
+        )
+    )
+);
+
+CREATE INDEX series_username_series_id_idx
+ON series (username, series_id);
+
+CREATE INDEX series_username_status_series_id_idx
+ON series (username, status, series_id);
+"""
+)
+
 
 def empty_user_state() -> dict[str, Any]:
-    return {"cursor": None, "movies": {}}
+    return {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
 
 
 def _validate_cursor(cursor: Any) -> None:
@@ -216,6 +276,27 @@ def _validate_movie(endpoint: Any, movie: Any) -> None:
         raise ValueError("unexpected completed movie metadata")
 
 
+def _validate_series(endpoint: Any, series: Any) -> None:
+    _validate_endpoint(endpoint)
+    if not isinstance(series, Mapping) or set(series) != SERIES_FIELDS:
+        raise ValueError("invalid series record")
+    status = series["status"]
+    tmdb_id = series["tmdb_id"]
+    reason = series["completion_reason"]
+    if status not in SERIES_STATUSES:
+        raise ValueError("invalid series status")
+    if status == "retry_letterboxd":
+        if tmdb_id is not None or reason is not None:
+            raise ValueError("invalid Letterboxd series retry record")
+    elif not isinstance(tmdb_id, str) or not tmdb_id:
+        raise ValueError("invalid series TMDB ID")
+    elif status == "completed":
+        if reason != "sonarr_processed":
+            raise ValueError("invalid series completion reason")
+    elif reason is not None:
+        raise ValueError("invalid pending series completion reason")
+
+
 def _validate_v2(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or set(data) != {"version", "users"}:
         raise ValueError("invalid state root")
@@ -273,10 +354,31 @@ class MovieStateChange:
 
 
 @dataclass(frozen=True)
+class SeriesStateChange:
+    action: str
+    endpoint: str
+    series: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.action not in {"upsert", "delete"}:
+            raise ValueError("invalid series state action")
+        _validate_endpoint(self.endpoint)
+        if self.action == "delete":
+            if self.series is not None:
+                raise ValueError("a delete cannot carry a series record")
+            return
+        _validate_series(self.endpoint, self.series)
+        object.__setattr__(self, "series", MappingProxyType(dict(self.series or {})))
+
+
+@dataclass(frozen=True)
 class StateCheckpoint:
     cursor_changed: bool = False
     cursor: Mapping[str, Any] | None = None
     movie_changes: tuple[MovieStateChange, ...] = ()
+    series_changes: tuple[SeriesStateChange, ...] = ()
+    series_backfill_changed: bool = False
+    series_backfill_complete: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.cursor_changed, bool):
@@ -285,6 +387,16 @@ class StateCheckpoint:
         if any(not isinstance(change, MovieStateChange) for change in changes):
             raise ValueError("invalid movie state changes")
         object.__setattr__(self, "movie_changes", changes)
+        series_changes = tuple(self.series_changes)
+        if any(not isinstance(change, SeriesStateChange) for change in series_changes):
+            raise ValueError("invalid series state changes")
+        object.__setattr__(self, "series_changes", series_changes)
+        if not isinstance(self.series_backfill_changed, bool) or not isinstance(
+            self.series_backfill_complete, bool
+        ):
+            raise ValueError("invalid series backfill marker")
+        if not self.series_backfill_changed and self.series_backfill_complete:
+            raise ValueError("unchanged series backfill marker cannot carry a value")
         if self.cursor_changed:
             _validate_cursor(self.cursor)
             if self.cursor is not None:
@@ -372,6 +484,9 @@ class SQLiteStateStore:
                 connection.execute(
                     "INSERT OR IGNORE INTO users (username) VALUES (?)", (username,)
                 )
+                connection.execute(
+                    "INSERT OR IGNORE INTO series_sync (username) VALUES (?)", (username,)
+                )
                 connection.execute("COMMIT")
             except Exception:
                 connection.execute("ROLLBACK")
@@ -408,8 +523,39 @@ class SQLiteStateStore:
                 }
                 _validate_movie(endpoint, movie)
                 movies[endpoint] = movie
+            marker_row = connection.execute(
+                "SELECT backfill_complete FROM series_sync WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if marker_row is None:
+                raise sqlite3.DatabaseError("series state was not created")
+            series_state = {}
+            rows = connection.execute(
+                """
+                SELECT endpoint, tmdb_id, status, completion_reason
+                FROM series
+                WHERE username = ? AND status IN (?, ?, ?)
+                ORDER BY series_id
+                """,
+                (username, *SERIES_PENDING_STATUSES),
+            )
+            for endpoint, tmdb_id, status, reason in rows:
+                item = {
+                    "tmdb_id": tmdb_id,
+                    "status": status,
+                    "completion_reason": reason,
+                }
+                _validate_series(endpoint, item)
+                series_state[endpoint] = item
             _validate_cursor(cursor)
-            return StateLoadResult(data={"cursor": cursor, "movies": movies})
+            return StateLoadResult(
+                data={
+                    "cursor": cursor,
+                    "movies": movies,
+                    "series": series_state,
+                    "series_backfill_complete": bool(marker_row[0]),
+                }
+            )
         except (sqlite3.Error, TypeError, ValueError):
             logger.error(
                 "User state could not be loaded",
@@ -437,14 +583,19 @@ class SQLiteStateStore:
             completed = set()
             for offset in range(0, len(candidates), 500):
                 batch = candidates[offset : offset + 500]
-                placeholders = ", ".join("?" for _ in batch)
+                values = ", ".join("(?)" for _ in batch)
                 rows = connection.execute(
                     f"""
+                    WITH candidates(endpoint) AS (VALUES {values})
                     SELECT endpoint FROM movies
                     WHERE username = ? AND status = 'completed'
-                      AND endpoint IN ({placeholders})
+                      AND endpoint IN (SELECT endpoint FROM candidates)
+                    UNION
+                    SELECT endpoint FROM series
+                    WHERE username = ? AND status = 'completed'
+                      AND endpoint IN (SELECT endpoint FROM candidates)
                     """,
-                    (username, *batch),
+                    (*batch, username, username),
                 )
                 completed.update(row[0] for row in rows)
             return CompletedEndpointsResult(endpoints=frozenset(completed))
@@ -463,7 +614,14 @@ class SQLiteStateStore:
                 raise ValueError("invalid state username")
             if not isinstance(checkpoint, StateCheckpoint):
                 raise TypeError("invalid state checkpoint")
-            if not checkpoint.cursor_changed and not checkpoint.movie_changes:
+            if not any(
+                (
+                    checkpoint.cursor_changed,
+                    checkpoint.movie_changes,
+                    checkpoint.series_changes,
+                    checkpoint.series_backfill_changed,
+                )
+            ):
                 raise ValueError("empty state checkpoint")
             connection = self._require_connection()
             connection.execute("BEGIN IMMEDIATE")
@@ -482,6 +640,11 @@ class SQLiteStateStore:
                             cursor["value"] if cursor else None,
                             username,
                         ),
+                    )
+                if checkpoint.series_backfill_changed:
+                    connection.execute(
+                        "UPDATE series_sync SET backfill_complete = ? WHERE username = ?",
+                        (int(checkpoint.series_backfill_complete), username),
                     )
                 for change in checkpoint.movie_changes:
                     if change.action == "delete":
@@ -514,6 +677,34 @@ class SQLiteStateStore:
                                 movie["title"],
                                 movie["year"],
                                 movie["completion_reason"],
+                            ),
+                        )
+                for change in checkpoint.series_changes:
+                    if change.action == "delete":
+                        connection.execute(
+                            "DELETE FROM series WHERE username = ? AND endpoint = ?",
+                            (username, change.endpoint),
+                        )
+                    else:
+                        item = change.series
+                        if item is None:
+                            raise ValueError("upsert is missing a series record")
+                        connection.execute(
+                            """
+                            INSERT INTO series (
+                                username, endpoint, tmdb_id, status, completion_reason
+                            ) VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(username, endpoint) DO UPDATE SET
+                                tmdb_id = excluded.tmdb_id,
+                                status = excluded.status,
+                                completion_reason = excluded.completion_reason
+                            """,
+                            (
+                                username,
+                                change.endpoint,
+                                item["tmdb_id"],
+                                item["status"],
+                                item["completion_reason"],
                             ),
                         )
                 connection.execute("COMMIT")
@@ -582,6 +773,9 @@ class SQLiteStateStore:
                             cursor["value"] if cursor else None,
                         ),
                     )
+                    connection.execute(
+                        "INSERT INTO series_sync (username) VALUES (?)", (username,)
+                    )
                     for endpoint, movie in user_state["movies"].items():
                         connection.execute(
                             """
@@ -618,10 +812,11 @@ class SQLiteStateStore:
         )
         try:
             version = connection.execute("PRAGMA user_version").fetchone()
-            if version == (1,):
-                self._verify_schema(connection, version=1)
+            if version in {(1,), (2,)}:
+                source_version = version[0]
+                self._verify_schema(connection, version=source_version)
                 self._configure_connection(connection)
-                self._migrate_v1_database(connection)
+                self._migrate_database(connection, source_version=source_version)
                 self._verify_schema(connection, version=SCHEMA_VERSION)
                 return connection, True
             self._verify_schema(connection, version=SCHEMA_VERSION)
@@ -639,14 +834,23 @@ class SQLiteStateStore:
         connection.execute("PRAGMA busy_timeout = 5000")
 
     @staticmethod
-    def _migrate_v1_database(connection: sqlite3.Connection) -> None:
+    def _migrate_database(
+        connection: sqlite3.Connection, *, source_version: int
+    ) -> None:
         connection.execute("BEGIN IMMEDIATE")
         try:
+            if source_version == 1:
+                connection.execute(
+                    """
+                    CREATE INDEX movies_username_status_movie_id_idx
+                    ON movies (username, status, movie_id)
+                    """
+                )
+            statements = SCHEMA_SQL.removeprefix(SCHEMA_V2_SQL).strip().split(";\n\n")
+            for statement in statements:
+                connection.execute(statement.removesuffix(";"))
             connection.execute(
-                """
-                CREATE INDEX movies_username_status_movie_id_idx
-                ON movies (username, status, movie_id)
-                """
+                "INSERT INTO series_sync (username) SELECT username FROM users"
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             SQLiteStateStore._verify_schema(connection, version=SCHEMA_VERSION)
@@ -663,23 +867,38 @@ class SQLiteStateStore:
         if connection.execute("PRAGMA user_version").fetchone() != (version,):
             raise sqlite3.DatabaseError("unsupported state database schema")
 
-        schema_sql = SCHEMA_V1_SQL if version == 1 else SCHEMA_SQL
+        schema_sql = {1: SCHEMA_V1_SQL, 2: SCHEMA_V2_SQL, 3: SCHEMA_SQL}.get(version)
+        if schema_sql is None:
+            raise sqlite3.DatabaseError("unsupported state database schema")
         schema_statements = schema_sql.strip().split(";\n\n")
         expected_sql = {
             "users": schema_statements[0],
             "movies": schema_statements[1],
             "movies_username_movie_id_idx": schema_statements[2].removesuffix(";"),
         }
-        if version == SCHEMA_VERSION:
+        if version >= 2:
             expected_sql["movies_username_status_movie_id_idx"] = schema_statements[
                 3
             ].removesuffix(";")
+        if version == 3:
+            expected_sql.update(
+                {
+                    "series_sync": schema_statements[4],
+                    "series": schema_statements[5],
+                    "series_username_series_id_idx": schema_statements[6].removesuffix(
+                        ";"
+                    ),
+                    "series_username_status_series_id_idx": schema_statements[
+                        7
+                    ].removesuffix(";"),
+                }
+            )
         stored_sql = {
             name: sql
             for name, sql in connection.execute(
                 """
                 SELECT name, sql FROM sqlite_master
-                WHERE type IN ('table', 'index') AND sql IS NOT NULL
+                WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
                 """
             )
         }
@@ -716,6 +935,19 @@ class SQLiteStateStore:
 
         if columns("users") != expected_users or columns("movies") != expected_movies:
             raise sqlite3.DatabaseError("invalid state database columns")
+        if version == 3:
+            if columns("series_sync") != [
+                ("username", "TEXT", 1, 1),
+                ("backfill_complete", "INTEGER", 1, 0),
+            ] or columns("series") != [
+                ("series_id", "INTEGER", 0, 1),
+                ("username", "TEXT", 1, 0),
+                ("endpoint", "TEXT", 1, 0),
+                ("tmdb_id", "TEXT", 0, 0),
+                ("status", "TEXT", 1, 0),
+                ("completion_reason", "TEXT", 0, 0),
+            ]:
+                raise sqlite3.DatabaseError("invalid series state database columns")
 
         foreign_keys = list(connection.execute("PRAGMA foreign_key_list(movies)"))
         if len(foreign_keys) != 1 or (
@@ -741,7 +973,7 @@ class SQLiteStateStore:
         ]
         if explicit_columns != ["username", "movie_id"]:
             raise sqlite3.DatabaseError("invalid state ordering index")
-        if version == SCHEMA_VERSION:
+        if version >= 2:
             status_index = next(
                 (
                     row
@@ -775,6 +1007,32 @@ class SQLiteStateStore:
                 break
         if not unique_endpoint:
             raise sqlite3.DatabaseError("missing unique movie endpoint index")
+        if version == 3:
+            for table in ("series_sync", "series"):
+                keys = list(connection.execute(f"PRAGMA foreign_key_list({table})"))
+                if len(keys) != 1 or (
+                    keys[0][2], keys[0][3], keys[0][4], keys[0][6]
+                ) != ("users", "username", "username", "CASCADE"):
+                    raise sqlite3.DatabaseError("invalid series state database foreign key")
+            series_indexes = list(connection.execute("PRAGMA index_list(series)"))
+            expected = {
+                "series_username_series_id_idx": ["username", "series_id"],
+                "series_username_status_series_id_idx": [
+                    "username",
+                    "status",
+                    "series_id",
+                ],
+            }
+            for name, expected_columns in expected.items():
+                index = next((row for row in series_indexes if row[1] == name), None)
+                if index is None or index[2] != 0:
+                    raise sqlite3.DatabaseError("missing series state index")
+                actual = [
+                    row[2]
+                    for row in connection.execute(f'PRAGMA index_info("{name}")')
+                ]
+                if actual != expected_columns:
+                    raise sqlite3.DatabaseError("invalid series state index")
 
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:

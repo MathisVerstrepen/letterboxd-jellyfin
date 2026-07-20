@@ -8,7 +8,7 @@ application does not push metrics or require a separate exporter.
 
 The listener exposes three fixed, unauthenticated `GET` routes:
 
-- `GET /health` reports process liveness. It returns HTTP 200 while the scheduler is running or sleeping, regardless of external service failures, and 503 during orderly shutdown. Docker probes this route, so a Radarr, Jellyfin, or Letterboxd outage does not create a container restart loop.
+- `GET /health` reports process liveness. It returns HTTP 200 while the scheduler is running or sleeping, regardless of external service failures, and 503 during orderly shutdown. Docker probes this route, so a Radarr, Sonarr, Jellyfin, or Letterboxd outage does not create a container restart loop.
 - `GET /ready` reports the latest completed sync result. It returns 503 until a cycle succeeds and returns 200 only when the most recently completed cycle fully succeeded. A later partial or failed cycle changes it back to 503. A cycle in progress retains the previous completed result.
 - `GET /metrics` returns Prometheus exposition data.
 
@@ -132,14 +132,12 @@ Prometheus exports these fixed-cardinality series:
 | `letterboxd_jellyfin_sync_last_success_timestamp_seconds` | Gauge without labels | Unix completion time of the latest successful cycle; `0` until the first success. |
 | `letterboxd_jellyfin_sync_last_run_duration_seconds` | Gauge without labels | Duration of the latest completed cycle in seconds; initially `0`. |
 | `letterboxd_jellyfin_sync_last_run_failed_items` | Gauge without labels | Failed work units in the latest completed cycle; initially `0`. |
-| `letterboxd_jellyfin_sync_failed_items_total` | Counter; `stage` is exactly `configuration`, `letterboxd`, `radarr`, `jellyfin`, `state`, or `runtime` | Failed work units since process start. Every stage series exists at `0` initially. |
-| `letterboxd_jellyfin_sync_last_run_queue_items` | Gauge; `queue` is exactly `radarr_add`, `jellyfin_add`, or `jellyfin_remove` | Local work admitted by the latest completed cycle for that queue; every queue series is initially `0`. |
+| `letterboxd_jellyfin_sync_failed_items_total` | Counter; `stage` is exactly `configuration`, `letterboxd`, `radarr`, `sonarr`, `jellyfin`, `state`, or `runtime` | Failed work units since process start. Every stage series exists at `0` initially. |
+| `letterboxd_jellyfin_sync_last_run_queue_items` | Gauge; `queue` is exactly `radarr_add`, `sonarr_add`, `jellyfin_add`, or `jellyfin_remove` | Local work attempted or admitted by the latest completed cycle for that queue; every queue series is initially `0`. |
 | `letterboxd_jellyfin_sync_in_progress` | Gauge without labels | `1` while a sync cycle is running and `0` otherwise; initially `0`. |
 | `letterboxd_jellyfin_ready` | Gauge without labels | The same readiness boolean used by `/ready`: `1` only when the latest completed cycle succeeded, otherwise `0`; initially `0`. |
 
-The `radarr_add`, `jellyfin_add`, and `jellyfin_remove` queue values count local work
-admitted by the latest cycle. They are not retry counts, successful-operation counts,
-or Radarr's remote queue depth.
+The queue values count local work in the latest cycle, not remote queue depth or successful-operation counts. In particular, `sonarr_add` counts actual Sonarr series POST attempts, including retried requests; it does not represent Sonarr's missing-episode queue depth.
 
 Metrics are process-local. Counters and latest-run gauges reset when the application
 restarts. Prometheus functions such as `increase()` account for counter resets, but
@@ -237,7 +235,7 @@ Runtime stdout contains one compact JSON object per log record. Every record has
 | `logger` | Required string | Logger name, normally `letterboxd-sync`. |
 | `event` | Required string | Stable snake-case event identifier; unclassified records use `runtime_log`. |
 | `message` | Required string | Fixed human-readable description. |
-| `component` | Required string | Current owner: `logging`, `service`, `scheduler`, `sync`, `state`, `letterboxd`, `proxy`, `radarr`, `jellyfin`, or `observability`. |
+| `component` | Required string | Current owner: `logging`, `service`, `scheduler`, `sync`, `state`, `letterboxd`, `proxy`, `radarr`, `sonarr`, `jellyfin`, or `observability`. |
 | `run_id` | Optional UUID4 string | Log-only correlation ID shared by one sync cycle. |
 | `user` | Optional string | Letterboxd username for user-scoped work. |
 

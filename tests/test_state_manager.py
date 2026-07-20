@@ -7,8 +7,10 @@ import pytest
 from src.state_manager import (
     APPLICATION_ID,
     SCHEMA_V1_SQL,
+    SCHEMA_V2_SQL,
     SCHEMA_VERSION,
     MovieStateChange,
+    SeriesStateChange,
     SQLiteStateStore,
     StateCheckpoint,
     _derive_db_path,
@@ -68,6 +70,15 @@ def build_v1_database(path):
         connection.execute("COMMIT")
 
 
+def build_v2_database(path):
+    with sqlite3.connect(path, isolation_level=None) as connection:
+        connection.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA_V2_SQL}")
+        connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+        connection.execute("PRAGMA user_version = 2")
+        connection.execute("INSERT INTO users (username) VALUES ('alice')")
+        connection.execute("COMMIT")
+
+
 def test_database_path_derivation():
     assert _derive_db_path("sync_state.json") == "sync_state.db"
     assert _derive_db_path("state") == "state.db"
@@ -78,7 +89,12 @@ def test_empty_database_initializes_with_exact_metadata_and_permissions(tmp_path
     store = store_for(tmp_path)
     result = store.initialize()
     assert (result.failed_items, result.migrated) == (0, False)
-    assert store.load_or_create_user("alice").data == {"cursor": None, "movies": {}}
+    assert store.load_or_create_user("alice").data == {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
     assert store.close().failed_items == 0
 
     path = tmp_path / "state.db"
@@ -105,13 +121,15 @@ def test_exact_v1_database_migrates_to_v2_and_preserves_completed_data(tmp_path)
     assert store.load_or_create_user("alice").data == {
         "cursor": {"kind": "letterboxd", "value": "film/example/"},
         "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
     }
     assert store.get_completed_endpoints(
         "alice", ("film/example/",)
     ).endpoints == frozenset({"film/example/"})
     store.close()
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
         assert connection.execute(
             "SELECT COUNT(*) FROM movies WHERE status = 'completed'"
         ).fetchone() == (1,)
@@ -128,12 +146,12 @@ def test_v1_migration_verification_failure_rolls_back_metadata(tmp_path, monkeyp
     build_v1_database(path)
     original_verify = SQLiteStateStore._verify_schema
 
-    def fail_v2(connection, *, version):
-        if version == 2:
+    def fail_v3(connection, *, version):
+        if version == 3:
             raise sqlite3.DatabaseError("injected verification failure")
         return original_verify(connection, version=version)
 
-    monkeypatch.setattr(SQLiteStateStore, "_verify_schema", staticmethod(fail_v2))
+    monkeypatch.setattr(SQLiteStateStore, "_verify_schema", staticmethod(fail_v3))
     assert store_for(tmp_path).initialize().failed_items == 1
 
     with sqlite3.connect(path) as connection:
@@ -142,6 +160,42 @@ def test_v1_migration_verification_failure_rolls_back_metadata(tmp_path, monkeyp
             row[1] for row in connection.execute("PRAGMA index_list(movies)")
         }
         assert connection.execute("SELECT COUNT(*) FROM movies").fetchone() == (1,)
+
+
+def test_exact_v2_database_migrates_to_v3(tmp_path):
+    path = tmp_path / "state.db"
+    build_v2_database(path)
+    store = store_for(tmp_path)
+    assert store.initialize().migrated
+    assert store.load_or_create_user("alice").data["series_backfill_complete"] is False
+    store.close()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert connection.execute("SELECT * FROM series_sync").fetchall() == [
+            ("alice", 0)
+        ]
+
+
+def test_v2_migration_verification_failure_rolls_back(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    build_v2_database(path)
+    original_verify = SQLiteStateStore._verify_schema
+
+    def fail_v3(connection, *, version):
+        if version == 3:
+            raise sqlite3.DatabaseError("injected")
+        return original_verify(connection, version=version)
+
+    monkeypatch.setattr(SQLiteStateStore, "_verify_schema", staticmethod(fail_v3))
+    assert store_for(tmp_path).initialize().failed_items == 1
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert "series" not in {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
 
 
 @pytest.mark.parametrize(
@@ -306,6 +360,65 @@ def test_completed_endpoint_lookup_deduplicates_and_batches(tmp_path):
     store.close()
 
 
+def test_series_state_marker_and_completed_union_round_trip(tmp_path):
+    store = store_for(tmp_path)
+    store.initialize()
+    store.load_or_create_user("alice")
+    pending = {"tmdb_id": "20", "status": "pending_sonarr", "completion_reason": None}
+    assert store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            series_changes=(SeriesStateChange("upsert", "show/a/", pending),),
+            series_backfill_changed=True,
+            series_backfill_complete=True,
+        ),
+    ).failed_items == 0
+    loaded = store.load_or_create_user("alice").data
+    assert loaded["series"] == {"show/a/": pending}
+    assert loaded["series_backfill_complete"] is True
+    completed = {
+        "tmdb_id": "20",
+        "status": "completed",
+        "completion_reason": "sonarr_processed",
+    }
+    assert store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            series_changes=(SeriesStateChange("upsert", "show/a/", completed),)
+        ),
+    ).failed_items == 0
+    assert store.get_completed_endpoints("alice", ("show/a/",)).endpoints == frozenset(
+        {"show/a/"}
+    )
+    store.close()
+
+
+def test_movie_retry_moves_to_series_atomically(tmp_path):
+    store = store_for(tmp_path)
+    store.initialize()
+    store.load_or_create_user("alice")
+    store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            movie_changes=(
+                MovieStateChange("upsert", "show/a/", record("retry_letterboxd")),
+            )
+        ),
+    )
+    item = {"tmdb_id": "20", "status": "pending_sonarr", "completion_reason": None}
+    assert store.checkpoint_user(
+        "alice",
+        StateCheckpoint(
+            movie_changes=(MovieStateChange("delete", "show/a/"),),
+            series_changes=(SeriesStateChange("upsert", "show/a/", item),),
+        ),
+    ).failed_items == 0
+    loaded = store.load_or_create_user("alice").data
+    assert loaded["movies"] == {}
+    assert loaded["series"] == {"show/a/": item}
+    store.close()
+
+
 def test_ordered_upsert_delete_and_cursor_clear_survive_reopen(tmp_path):
     store = store_for(tmp_path)
     store.initialize()
@@ -374,7 +487,12 @@ def test_checkpoint_rolls_back_cursor_and_prior_movie_on_mid_transaction_failure
     )
 
     assert store.checkpoint_user("alice", checkpoint).failed_items == 1
-    assert store.load_or_create_user("alice").data == {"cursor": None, "movies": {}}
+    assert store.load_or_create_user("alice").data == {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
     store.close()
 
 
@@ -385,7 +503,12 @@ def test_empty_and_invalid_checkpoints_issue_no_changes(tmp_path):
     assert store.checkpoint_user("alice", StateCheckpoint()).failed_items == 1
     with pytest.raises(ValueError):
         MovieStateChange("upsert", "film/a/", record("pending_jellyfin", "1", "M", True))
-    assert store.load_or_create_user("alice").data == {"cursor": None, "movies": {}}
+    assert store.load_or_create_user("alice").data == {
+        "cursor": None,
+        "movies": {},
+        "series": {},
+        "series_backfill_complete": False,
+    }
     store.close()
 
 

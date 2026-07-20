@@ -32,22 +32,42 @@ def test_letterboxd_request_retries_with_rotated_proxies(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("html", "outcome", "tmdb_id"),
+    ("html", "outcome", "media_type", "tmdb_id"),
     [
-        (detail_page("123"), "movie", "123"),
-        (detail_page("45", "tv"), "not_movie", None),
-        (b"<p>missing</p>", "retry", None),
-        (b'<a data-track-action="TMDB" href=""></a>', "retry", None),
+        (detail_page("123"), "resolved", "movie", "123"),
+        (detail_page("45", "tv"), "resolved", "series", "45"),
+        (b"<p>missing</p>", "retry", None, None),
+        (b'<a data-track-action="TMDB" href=""></a>', "retry", None, None),
     ],
 )
-def test_extract_tmdb_detail(html, outcome, tmdb_id, response_factory, monkeypatch):
+def test_extract_tmdb_detail(
+    html, outcome, media_type, tmdb_id, response_factory, monkeypatch
+):
     monkeypatch.setattr(
         letterboxd,
         "make_letterboxd_request",
         Mock(return_value=response_factory(content=html)),
     )
     result = letterboxd.extract_tmdb_id_from_endpoint("film/example/", Mock())
-    assert (result.outcome, result.tmdb_id) == (outcome, tmdb_id)
+    assert (result.outcome, result.media_type, result.tmdb_id) == (
+        outcome,
+        media_type,
+        tmdb_id,
+    )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("movie", "movie", "1"),
+        ("resolved", None, "1"),
+        ("resolved", "movie", None),
+        ("retry", "series", "1"),
+    ],
+)
+def test_detail_result_rejects_inconsistent_identity(args):
+    with pytest.raises(ValueError):
+        LetterboxdDetailResult(*args)
 
 
 def test_watchlist_initial_failure_is_not_no_change(monkeypatch):
@@ -186,3 +206,27 @@ def test_failed_pagination_returns_known_entries_without_advancing(
     assert result.failed_items == 1
     assert result.outcome == "partial"
     assert not result.scan_complete
+
+
+def test_default_filter_skips_series_but_series_only_keeps_it(
+    response_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        letterboxd,
+        "make_letterboxd_request",
+        Mock(return_value=response_factory(content=frame_page("show/a/"))),
+    )
+    monkeypatch.setattr(
+        letterboxd,
+        "extract_tmdb_id_from_endpoint",
+        Mock(return_value=LetterboxdDetailResult("resolved", "series", "20")),
+    )
+    default = letterboxd.get_new_watchlist_entries("alice", Mock(), 1, None)
+    series = letterboxd.get_new_watchlist_entries(
+        "alice", Mock(), 1, None, include_series=True, include_movies=False
+    )
+    assert default.entries == []
+    assert default.skipped_items == 1
+    assert [(entry.endpoint, entry.detail.tmdb_id) for entry in series.entries] == [
+        ("show/a/", "20")
+    ]
